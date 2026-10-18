@@ -723,10 +723,10 @@ if [ $mode == 2 ]; then
 fi
 if [ $mode == 1 ]
 then
-	read -p "请选择xray协议(默认1.vmess,2.vless):" protocol
+	read -p "请选择xray协议(1.vmess,默认2.vless):" protocol
 	if [ -z "$protocol" ]
 	then
-		protocol=1
+		protocol=2
 	fi
 	if [ $protocol != 1 ] && [ $protocol != 2 ]
 	then
