@@ -307,51 +307,68 @@ cat>/opt/suoha/config.json<<EOF
 EOF
 fi
 clear
-echo 复制下面的链接,用浏览器打开并授权需要绑定的域名
-echo 在网页中授权完毕后会继续进行下一步设置
-/opt/suoha/cloudflared-linux --edge-ip-version auto --protocol http2 tunnel login
-clear
-/opt/suoha/cloudflared-linux --edge-ip-version auto --protocol http2 tunnel list >argo.log 2>&1
-echo -e ARGO TUNNEL当前已经绑定的服务如下'\n'
-sed 1,2d argo.log | awk '{print $2}'
-echo -e '\n'自定义一个完整二级域名,例如 xxx.example.com
-echo 必须是网页里面绑定授权的域名才生效,不能乱输入
-read -p "输入绑定域名的完整二级域名: " domain
-if [ -z "$domain" ]
-then
-	echo 没有设置域名
-	exit
-elif [ $(echo $domain | grep "\." | wc -l) == 0 ]
-then
-	echo 域名格式不正确
-	exit
+CLOUDFLARED="/opt/suoha/cloudflared-linux"
+CERT="${HOME}/.cloudflared/cert.pem"
+ARGO_LOG="argo.log"
+if [[ ! -f "$CERT" ]]; then
+    echo "复制下面的链接,用浏览器打开并授权需要绑定的域名"
+    echo "在网页中授权完毕后会继续进行下一步设置"
+    $CLOUDFLARED --edge-ip-version auto --protocol http2 tunnel login
+    clear
 fi
-name=$(echo $domain | awk -F\. '{print $1}')
-if [ $(sed 1,2d argo.log | awk '{print $2}' | grep -w $name | wc -l) == 0 ]
-then
-	echo 创建TUNNEL $name
-	/opt/suoha/cloudflared-linux --edge-ip-version auto --protocol http2 tunnel create $name >argo.log 2>&1
-	echo TUNNEL $name 创建成功
+cert_json=$(sed -n '/-----BEGIN/,/-----END/p' "$CERT" | grep -v '^-----' | tr -d '\n' | base64 -d 2>/dev/null)
+zone_id=$(printf '%s' "$cert_json" | grep -o '"zoneID":"[^"]*"' | cut -d'"' -f4)
+api_token=$(printf '%s' "$cert_json" | grep -o '"apiToken":"[^"]*"' | cut -d'"' -f4)
+
+if [[ -z "$zone_id" || -z "$api_token" ]]; then
+    echo "无法从 cert.pem 解析 zone 信息，请重新 login"
+    exit 1
+fi
+zone_name=$(curl -sS "https://api.cloudflare.com/client/v4/zones/${zone_id}" \
+    -H "Authorization: Bearer ${api_token}" \
+    | grep -o '"result":{[^}]*}' | grep -o '"name":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+if [[ -z "$zone_name" ]]; then
+    echo "无法获取 zone 名称"
+    exit 1
+fi
+echo "已授权的域名区域：$zone_name"
+$CLOUDFLARED --edge-ip-version auto --protocol http2 tunnel list >"$ARGO_LOG" 2>&1
+echo -e "\nARGO TUNNEL 当前已经绑定的服务："
+sed 1,2d "$ARGO_LOG" | awk '{print $2}'
+echo -e "\n自定义一个二级域名前缀，例如 xxx 或 例子"
+echo "完整域名将是 <前缀>.${zone_name}（Punycode 由 cloudflared 自动处理）"
+read -r -p "输入二级域名前缀: " input
+if [[ -z "$input" ]]; then
+    echo "没有设置域名"
+    exit 1
+fi
+domain="${input}.${zone_name}"
+name="${input}"
+if [[ $(sed 1,2d "$ARGO_LOG" | awk '{print $2}' | grep -w "$name" | wc -l) -eq 0 ]]; then
+    echo "创建 TUNNEL $name"
+    $CLOUDFLARED --edge-ip-version auto --protocol http2 tunnel create "$name" >"$ARGO_LOG" 2>&1
+    echo "TUNNEL $name 创建成功"
 else
-	echo TUNNEL $name 已经存在
-	if [ ! -f "/root/.cloudflared/$(sed 1,2d argo.log | awk '{print $1" "$2}' | grep -w $name | awk '{print $1}').json" ]
-	then
-		echo /root/.cloudflared/$(sed 1,2d argo.log | awk '{print $1" "$2}' | grep -w $name | awk '{print $1}').json 文件不存在
-		echo 清理TUNNEL $name
-		/opt/suoha/cloudflared-linux --edge-ip-version auto --protocol http2 tunnel cleanup $name >argo.log 2>&1
-		echo 删除TUNNEL $name
-		/opt/suoha/cloudflared-linux --edge-ip-version auto --protocol http2 tunnel delete $name >argo.log 2>&1
-		echo 重建TUNNEL $name
-		/opt/suoha/cloudflared-linux --edge-ip-version auto --protocol http2 tunnel create $name >argo.log 2>&1
-	else
-		echo 清理TUNNEL $name
-		/opt/suoha/cloudflared-linux --edge-ip-version auto --protocol http2 tunnel cleanup $name >argo.log 2>&1
-	fi
+    echo "TUNNEL $name 已经存在"
+    tunnel_json="/root/.cloudflared/$(sed 1,2d "$ARGO_LOG" | awk '{print $1" "$2}' | grep -w "$name" | awk '{print $1}').json"
+    if [[ ! -f "$tunnel_json" ]]; then
+        echo "$tunnel_json 文件不存在"
+        echo "清理 TUNNEL $name"
+        $CLOUDFLARED --edge-ip-version auto --protocol http2 tunnel cleanup "$name" >"$ARGO_LOG" 2>&1
+        echo "删除 TUNNEL $name"
+        $CLOUDFLARED --edge-ip-version auto --protocol http2 tunnel delete "$name" >"$ARGO_LOG" 2>&1
+        echo "重建 TUNNEL $name"
+        $CLOUDFLARED --edge-ip-version auto --protocol http2 tunnel create "$name" >"$ARGO_LOG" 2>&1
+    else
+        echo "清理 TUNNEL $name"
+        $CLOUDFLARED --edge-ip-version auto --protocol http2 tunnel cleanup "$name" >"$ARGO_LOG" 2>&1
+    fi
 fi
-echo 绑定 TUNNEL $name 到域名 $domain
-/opt/suoha/cloudflared-linux --edge-ip-version auto --protocol http2 tunnel route dns --overwrite-dns $name $domain >argo.log 2>&1
-echo $domain 绑定成功
-tunneluuid=$(cut -d= -f2 argo.log)
+echo "绑定 TUNNEL $name 到域名 $domain"
+$CLOUDFLARED --edge-ip-version auto --protocol http2 tunnel route dns --overwrite-dns "$name" "$domain" >"$ARGO_LOG" 2>&1
+echo "$domain 绑定成功"
+tunneluuid=$(cut -d= -f2 "$ARGO_LOG")
 if [ $protocol == 1 ]
 then
 	echo -e vmess链接已经生成, cf.877774.xyz 可替换为CF优选IP'\n' >/opt/suoha/v2ray.txt
