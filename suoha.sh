@@ -327,7 +327,6 @@ fi
 zone_name=$(curl -sS "https://api.cloudflare.com/client/v4/zones/${zone_id}" \
     -H "Authorization: Bearer ${api_token}" \
     | grep -o '"result":{[^}]*}' | grep -o '"name":"[^"]*"' | head -1 | cut -d'"' -f4)
-
 if [[ -z "$zone_name" ]]; then
     echo "无法获取 zone 名称"
     exit 1
@@ -336,15 +335,29 @@ echo "已授权的域名区域：$zone_name"
 $CLOUDFLARED --edge-ip-version auto --protocol http2 tunnel list >"$ARGO_LOG" 2>&1
 echo -e "\nARGO TUNNEL 当前已经绑定的服务："
 sed 1,2d "$ARGO_LOG" | awk '{print $2}'
+
 echo -e "\n自定义一个二级域名前缀，例如 xxx 或 例子"
-echo "完整域名将是 <前缀>.${zone_name}（Punycode 由 cloudflared 自动处理）"
+echo "完整域名将是 <前缀>.${zone_name}"
 read -r -p "输入二级域名前缀: " input
+
 if [[ -z "$input" ]]; then
     echo "没有设置域名"
     exit 1
 fi
+#拼出完整域名
 domain="${input}.${zone_name}"
-name="${input}"
+echo "正在通过 Cloudflare 校验域名..."
+existing_name=$(curl -sS -X GET "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records?name=${domain}" \
+    -H "Authorization: Bearer ${api_token}" \
+    | grep -o '"name":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+if [[ -n "$existing_name" ]]; then
+    domain="$existing_name"
+    echo "Cloudflare 已有记录，使用其标准编码：$domain"
+else
+    echo "Cloudflare 暂无记录，保留原始域名：$domain"
+fi
+name="${domain%%.*}"
 if [[ $(sed 1,2d "$ARGO_LOG" | awk '{print $2}' | grep -w "$name" | wc -l) -eq 0 ]]; then
     echo "创建 TUNNEL $name"
     $CLOUDFLARED --edge-ip-version auto --protocol http2 tunnel create "$name" >"$ARGO_LOG" 2>&1
@@ -368,6 +381,7 @@ fi
 echo "绑定 TUNNEL $name 到域名 $domain"
 $CLOUDFLARED --edge-ip-version auto --protocol http2 tunnel route dns --overwrite-dns "$name" "$domain" >"$ARGO_LOG" 2>&1
 echo "$domain 绑定成功"
+
 tunneluuid=$(cut -d= -f2 "$ARGO_LOG")
 if [ $protocol == 1 ]
 then
