@@ -583,12 +583,7 @@ then
     LINKS="/opt/suoha/v2ray.txt"
     Xray="/opt/suoha/xray"
 
-    printf '%s\n' '请输入 SOCKS5 分享链接：'
-    printf '%s\n' '示例：socks5://user-af:globe-server-af@10.91.0.1:8080#user-af'
-    IFS= read -r SOCKS_URL < /dev/tty || {
-    echo "错误：无法从终端读取输入"
-    exit 1
-	}
+    read -r -p "输入 SOCKS5 分享链接: " SOCKS_URL
 
     case "$SOCKS_URL" in
     socks5://*) ;;
@@ -915,13 +910,7 @@ then
     LINKS="/opt/suoha/v2ray.txt"
     Xray="/opt/suoha/xray"
 
-    printf '%s\n' '请输入 SOCKS5 分享链接：'
-    printf '%s\n' '示例：socks5://user-af:globe-server-af@10.91.0.1:8080#user-af'
-    IFS= read -r SOCKS_URL < /dev/tty || {
-    echo "错误：无法从终端读取输入"
-    exit 1
-	}
-
+    read -r -p "输入 SOCKS5 分享链接: " SOCKS_URL
     case "$SOCKS_URL" in
     socks5://*) ;;
     *)
