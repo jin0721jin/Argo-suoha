@@ -588,11 +588,12 @@ then
     read -r SOCKS_URL
 
     case "$SOCKS_URL" in
-        socks5://*) ;;
-        *)
-            echo "错误：链接必须以 socks5:// 开头"
-            exit 1
-            ;;
+    socks5://*) ;;
+    *)
+        echo "错误：链接必须以 socks5:// 开头"
+        echo "实际读取到：[$SOCKS_URL]"
+        exit 1
+        ;;
     esac
 
     SUFFIX="${SOCKS_URL##*#}"
@@ -916,11 +917,12 @@ then
     read -r SOCKS_URL
 
     case "$SOCKS_URL" in
-        socks5://*) ;;
-        *)
-            echo "错误：链接必须以 socks5:// 开头"
-            exit 1
-            ;;
+    socks5://*) ;;
+    *)
+        echo "错误：链接必须以 socks5:// 开头"
+        echo "实际读取到：[$SOCKS_URL]"
+        exit 1
+        ;;
     esac
 
     SUFFIX="${SOCKS_URL##*#}"
