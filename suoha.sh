@@ -577,33 +577,42 @@ then
 	echo "nameserver 1.1.1.1" > /etc/resolv.conf
 	echo "nameserver 1.0.0.1" >> /etc/resolv.conf
 
-elif [ \$menu == 8 ]
-then
+
+# 菜单 8：添加 SOCKS5 分流节点
+if [ "$menu" = "8" ]; then
     CONFIG="/opt/suoha/config.json"
     LINKS="/opt/suoha/v2ray.txt"
-    Xray="/opt/suoha/xray"
+    XRAY="/opt/suoha/xray"
 
-    read -r -p "输入 SOCKS5 分享链接: " SOCKS_URL
+    # 当前节点使用的域名和 WS 路径
+    DOMAIN="ulz.rinima.tech"
+    URLPATH="b59441b0"
+
+    read -r -p "输入 SOCKS5 分享链接: " SOCKS_URL </dev/tty
+
+    if [ -z "$SOCKS_URL" ]; then
+        echo "错误：没有读取到输入，请重新运行菜单 8"
+        continue
+    fi
 
     case "$SOCKS_URL" in
-    socks5://*) ;;
-    *)
-        echo "错误：链接必须以 socks5:// 开头"
-        echo "实际读取到：[$SOCKS_URL]"
-        exit 1
-        ;;
+        socks5://*) ;;
+        *)
+            echo "错误：链接必须以 socks5:// 开头"
+            continue
+            ;;
     esac
 
     SUFFIX="${SOCKS_URL##*#}"
-    if [ "$SUFFIX" = "$SOCKS_URL" ]; then
+    if [ "$SUFFIX" = "$SOCKS_URL" ] || [ -z "$SUFFIX" ]; then
         echo "错误：链接必须包含 #标签后缀"
-        exit 1
+        continue
     fi
 
     case "$SUFFIX" in
-        ""|*[!a-zA-Z0-9_-]*)
-            echo "错误：标签后缀只允许字母、数字、下划线和连字符"
-            exit 1
+        *[!a-zA-Z0-9_-]*)
+            echo "错误：标签只允许字母、数字、下划线和连字符"
+            continue
             ;;
     esac
 
@@ -614,7 +623,7 @@ then
         *@*) ;;
         *)
             echo "错误：链接缺少用户名和密码"
-            exit 1
+            continue
             ;;
     esac
 
@@ -625,196 +634,188 @@ then
     SOCKS_HOST="${HOSTPORT%:*}"
     SOCKS_PORT="${HOSTPORT##*:}"
 
-    if [ -z "$SOCKS_USER" ] || [ "$SOCKS_PASS" = "$AUTH" ] ||
-       [ -z "$SOCKS_PASS" ] || [ -z "$SOCKS_HOST" ] ||
+    if [ -z "$SOCKS_USER" ] ||
+       [ "$SOCKS_PASS" = "$AUTH" ] ||
+       [ -z "$SOCKS_PASS" ] ||
+       [ -z "$SOCKS_HOST" ] ||
        [ -z "$SOCKS_PORT" ]; then
         echo "错误：无法解析 SOCKS5 地址、端口或账号密码"
-        exit 1
+        continue
     fi
 
     case "$SOCKS_PORT" in
         *[!0-9]*)
             echo "错误：端口必须为数字"
-            exit 1
+            continue
             ;;
     esac
 
+    if [ "$SOCKS_PORT" -lt 1 ] || [ "$SOCKS_PORT" -gt 65535 ]; then
+        echo "错误：端口范围必须为 1-65535"
+        continue
+    fi
+
     case "$SOCKS_USER$SOCKS_PASS$SOCKS_HOST" in
         *['"\\']*)
-            echo "错误：账号、密码或地址包含当前脚本不支持的特殊字符"
-            exit 1
+            echo "错误：账号、密码或地址包含不支持的特殊字符"
+            continue
             ;;
     esac
 
     TAG="socks-$SUFFIX"
     UUID="$(cat /proc/sys/kernel/random/uuid)"
 
-    if [ ! -f "$CONFIG" ]; then
-        echo "错误：找不到配置文件 $CONFIG"
-        exit 1
+    if [ ! -f "$CONFIG" ] || [ ! -x "$XRAY" ]; then
+        echo "错误：找不到配置文件或 Xray 可执行文件"
+        continue
     fi
 
-    if [ ! -x "$Xray" ]; then
-        echo "错误：找不到可执行的 Xray：$Xray"
-        exit 1
-    fi
-
-    if grep -q "\"email\"[[:space:]]*:[[:space:]]*\"$TAG\"" "$CONFIG" ||
-       grep -q "\"tag\"[[:space:]]*:[[:space:]]*\"$TAG\"" "$CONFIG"; then
+    if grep -Fq "\"email\": \"$TAG\"" "$CONFIG" ||
+       grep -Fq "\"tag\": \"$TAG\"" "$CONFIG"; then
         echo "错误：标签 $TAG 已存在"
-        exit 1
+        continue
     fi
 
-    # 确认当前配置包含需要修改的数组
-    grep -q '"clients"[[:space:]]*:' "$CONFIG" || {
-        echo "错误：没有找到 VLESS clients 数组"
-        exit 1
-    }
+    # 当前配置必须尚未包含 routing，且具有 clients/outbounds
+    if grep -q '"routing"[[:space:]]*:' "$CONFIG"; then
+        echo "错误：当前配置已经存在 routing，请勿重复添加"
+        echo "需要针对现有 routing 合并规则后再执行"
+        continue
+    fi
 
-    grep -q '"outbounds"[[:space:]]*:' "$CONFIG" || {
-        echo "错误：没有找到 outbounds 数组"
-        exit 1
-    }
-
-    grep -q '"rules"[[:space:]]*:' "$CONFIG" || {
-        echo "错误：没有找到 routing.rules 数组"
-        exit 1
-    }
+    if ! grep -q '"clients"[[:space:]]*:' "$CONFIG" ||
+       ! grep -q '"outbounds"[[:space:]]*:' "$CONFIG"; then
+        echo "错误：未找到 clients 或 outbounds 数组"
+        continue
+    fi
 
     BACKUP="${CONFIG}.bak.$(date +%Y%m%d%H%M%S)"
     TMP1="/tmp/suoha-socks-1.$$"
     TMP2="/tmp/suoha-socks-2.$$"
     TMP3="/tmp/suoha-socks-3.$$"
 
-    cp "$CONFIG" "$BACKUP" || exit 1
+    cp "$CONFIG" "$BACKUP" || {
+        echo "错误：备份配置失败"
+        continue
+    }
 
-    # 第一步：向 VLESS clients 数组追加客户端
-    # 适配当前配置中 clients 数组结束行的 16 空格缩进
+    # 第一步：向 clients 数组追加 VLESS 客户端
     awk -v uuid="$UUID" -v tag="$TAG" '
         /"clients"[[:space:]]*:/ { inside=1 }
-        inside && /^                \]/ {
-            print "                ,"
-            print "                {\"id\":\"" uuid "\",\"email\":\"" tag "\"}"
+        inside && /^[[:space:]]*\][[:space:]]*,?[[:space:]]*$/ {
+            print "                                        ,"
+            print "                                        {"
+            print "                                                \"id\": \"" uuid "\","
+            print "                                                \"email\": \"" tag "\""
+            print "                                        }"
             inside=0
             found=1
         }
         { print }
         END { if (!found) exit 2 }
     ' "$CONFIG" > "$TMP1" || {
-        echo "错误：无法安全定位 clients 数组"
+        echo "错误：定位 clients 数组失败，原配置未修改"
         rm -f "$TMP1" "$TMP2" "$TMP3"
-        exit 1
+        continue
     }
 
-    # 第二步：追加 SOCKS 出站
-    # 适配当前配置中 outbounds 外层数组结束行的 8 空格缩进
+    # 第二步：向 outbounds 数组追加 SOCKS 出站
     awk -v tag="$TAG" -v host="$SOCKS_HOST" \
         -v port="$SOCKS_PORT" -v user="$SOCKS_USER" \
         -v pass="$SOCKS_PASS" '
         /"outbounds"[[:space:]]*:/ { inside=1 }
-        inside && /^        \]/ {
-            print "        ,"
-            print "        {"
-            print "          \"tag\": \"" tag "\","
-            print "          \"protocol\": \"socks\","
-            print "          \"settings\": {"
-            print "            \"servers\": [{"
-            print "              \"address\": \"" host "\","
-            print "              \"port\": " port ","
-            print "              \"users\": [{\"user\": \"" user "\", \"pass\": \"" pass "\"}]"
-            print "            }]"
-            print "          }"
-            print "        }"
+        inside && /^[[:space:]]*\][[:space:]]*,?[[:space:]]*$/ {
+            print "                ,"
+            print "                {"
+            print "                        \"tag\": \"" tag "\","
+            print "                        \"protocol\": \"socks\","
+            print "                        \"settings\": {"
+            print "                                \"servers\": ["
+            print "                                        {"
+            print "                                                \"address\": \"" host "\","
+            print "                                                \"port\": " port ","
+            print "                                                \"users\": ["
+            print "                                                        {"
+            print "                                                                \"user\": \"" user "\","
+            print "                                                                \"pass\": \"" pass "\""
+            print "                                                        }"
+            print "                                                ]"
+            print "                                        }"
+            print "                                ]"
+            print "                        }"
+            print "                }"
             inside=0
             found=1
         }
         { print }
         END { if (!found) exit 2 }
     ' "$TMP1" > "$TMP2" || {
-        echo "错误：无法安全定位 outbounds 数组"
+        echo "错误：定位 outbounds 数组失败，原配置未修改"
         rm -f "$TMP1" "$TMP2" "$TMP3"
-        exit 1
+        continue
     }
 
-    # 第三步：追加按 email 匹配的路由规则
-    # 适配当前配置中 routing.rules 数组结束行的 12 空格缩进
+    # 第三步：在根对象中创建 routing.rules
     awk -v tag="$TAG" '
-        /"rules"[[:space:]]*:/ { inside=1 }
-        inside && /^            \]/ {
-            print "            ,"
-            print "            {"
-            print "              \"type\": \"field\","
-            print "              \"inboundTag\": [\"vless-ws\"],"
-            print "              \"user\": [\"" tag "\"],"
-            print "              \"outboundTag\": \"" tag "\""
-            print "            }"
-            inside=0
-            found=1
+        { lines[NR]=$0 }
+        END {
+            if (NR < 2 || lines[NR] !~ /^[[:space:]]*}[[:space:]]*$/)
+                exit 2
+
+            for (i=1; i<NR; i++)
+                print lines[i]
+
+            print "        ,"
+            print "        \"routing\": {"
+            print "                \"rules\": ["
+            print "                        {"
+            print "                                \"type\": \"field\","
+            print "                                \"user\": [\"" tag "\"],"
+            print "                                \"outboundTag\": \"" tag "\""
+            print "                        }"
+            print "                ]"
+            print "        }"
+            print lines[NR]
         }
-        { print }
-        END { if (!found) exit 2 }
     ' "$TMP2" > "$TMP3" || {
-        echo "错误：无法安全定位 routing.rules 数组"
+        echo "错误：无法在根对象中创建 routing，原配置未修改"
         rm -f "$TMP1" "$TMP2" "$TMP3"
-        exit 1
+        continue
     }
 
-    # 检查生成内容是否包含三个必要部分
-    grep -q "\"email\":\"$TAG\"" "$TMP3" || {
-        echo "错误：未找到新增客户端"
-        rm -f "$TMP1" "$TMP2" "$TMP3"
-        exit 1
-    }
-
-    grep -q "\"tag\": \"$TAG\"" "$TMP3" || {
-        echo "错误：未找到新增出站"
-        rm -f "$TMP1" "$TMP2" "$TMP3"
-        exit 1
-    }
-
-    grep -q "\"outboundTag\": \"$TAG\"" "$TMP3" || {
-        echo "错误：未找到新增路由规则"
-        rm -f "$TMP1" "$TMP2" "$TMP3"
-        exit 1
-    }
-
-    # 测试配置通过后才替换原配置
-    if ! "$Xray" run -test -config "$TMP3"; then
+    # 测试通过后才覆盖原配置
+    if ! "$XRAY" run -test -config "$TMP3"; then
         echo "错误：Xray 配置测试失败，原配置未修改"
         echo "备份文件：$BACKUP"
         rm -f "$TMP1" "$TMP2" "$TMP3"
-        exit 1
+        continue
     fi
 
-    cat "$TMP3" > "$CONFIG" || {
-        echo "错误：写入配置失败，备份文件：$BACKUP"
+    if ! cat "$TMP3" > "$CONFIG"; then
+        echo "错误：写入失败，请检查备份：$BACKUP"
+        cp "$BACKUP" "$CONFIG"
         rm -f "$TMP1" "$TMP2" "$TMP3"
-        exit 1
-    }
+        continue
+    fi
 
     rm -f "$TMP1" "$TMP2" "$TMP3"
 
-    # 追加分享链接，不覆盖原有节点
-    if [ -n "$domain" ] && [ -n "$urlpath" ]; then
-        {
-            echo ""
-            echo "===== SOCKS5 节点：$TAG ====="
-            echo "vless://$UUID@cf.877774.xyz:443?encryption=none&security=tls&type=ws&host=$domain&path=$urlpath&sni=$domain#$TAG"
-            echo "vless://$UUID@cf.877774.xyz:80?encryption=none&security=none&type=ws&host=$domain&path=$urlpath#$TAG"
-        } >> "$LINKS"
-
-        echo "分享链接已追加到 $LINKS"
-    else
-        echo "警告：domain 或 urlpath 未定义，未生成分享链接"
-    fi
+    # 追加分享链接，不覆盖原有节点列表
+    {
+        echo ""
+        echo "===== SOCKS5 节点：$TAG ====="
+        echo "vless://$UUID@cf.877774.xyz:443?encryption=none&security=tls&type=ws&host=$DOMAIN&path=$URLPATH&sni=$DOMAIN#$TAG"
+        echo "vless://$UUID@cf.877774.xyz:80?encryption=none&security=none&type=ws&host=$DOMAIN&path=$URLPATH#$TAG"
+    } >> "$LINKS"
 
     echo ""
-    echo "SOCKS5 节点添加完成"
+    echo "SOCKS5 节点添加成功"
     echo "UUID：$UUID"
     echo "路由标签：$TAG"
     echo "SOCKS5 地址：$SOCKS_HOST:$SOCKS_PORT"
     echo "配置备份：$BACKUP"
-    echo "请按原脚本的服务管理方式重启 Xray，使配置生效。"
+    echo "分享链接已追加到：$LINKS"
+    echo "请使用原脚本的服务管理方式重启 Xray。"
 fi
 done
 EOF
@@ -904,32 +905,42 @@ elif [ \$menu == 7 ]
 then
 	echo "nameserver 1.1.1.1" > /etc/resolv.conf
 	echo "nameserver 1.0.0.1" >> /etc/resolv.conf
-elif [ \$menu == 8 ]
-then
+
+# 菜单 8：添加 SOCKS5 分流节点
+if [ "$menu" = "8" ]; then
     CONFIG="/opt/suoha/config.json"
     LINKS="/opt/suoha/v2ray.txt"
-    Xray="/opt/suoha/xray"
+    XRAY="/opt/suoha/xray"
 
-    read -r -p "输入 SOCKS5 分享链接: " SOCKS_URL
+    # 当前节点使用的域名和 WS 路径
+    DOMAIN="ulz.rinima.tech"
+    URLPATH="b59441b0"
+
+    read -r -p "输入 SOCKS5 分享链接: " SOCKS_URL </dev/tty
+
+    if [ -z "$SOCKS_URL" ]; then
+        echo "错误：没有读取到输入，请重新运行菜单 8"
+        continue
+    fi
+
     case "$SOCKS_URL" in
-    socks5://*) ;;
-    *)
-        echo "错误：链接必须以 socks5:// 开头"
-        echo "实际读取到：[$SOCKS_URL]"
-        exit 1
-        ;;
+        socks5://*) ;;
+        *)
+            echo "错误：链接必须以 socks5:// 开头"
+            continue
+            ;;
     esac
 
     SUFFIX="${SOCKS_URL##*#}"
-    if [ "$SUFFIX" = "$SOCKS_URL" ]; then
+    if [ "$SUFFIX" = "$SOCKS_URL" ] || [ -z "$SUFFIX" ]; then
         echo "错误：链接必须包含 #标签后缀"
-        exit 1
+        continue
     fi
 
     case "$SUFFIX" in
-        ""|*[!a-zA-Z0-9_-]*)
-            echo "错误：标签后缀只允许字母、数字、下划线和连字符"
-            exit 1
+        *[!a-zA-Z0-9_-]*)
+            echo "错误：标签只允许字母、数字、下划线和连字符"
+            continue
             ;;
     esac
 
@@ -940,7 +951,7 @@ then
         *@*) ;;
         *)
             echo "错误：链接缺少用户名和密码"
-            exit 1
+            continue
             ;;
     esac
 
@@ -951,201 +962,188 @@ then
     SOCKS_HOST="${HOSTPORT%:*}"
     SOCKS_PORT="${HOSTPORT##*:}"
 
-    if [ -z "$SOCKS_USER" ] || [ "$SOCKS_PASS" = "$AUTH" ] ||
-       [ -z "$SOCKS_PASS" ] || [ -z "$SOCKS_HOST" ] ||
+    if [ -z "$SOCKS_USER" ] ||
+       [ "$SOCKS_PASS" = "$AUTH" ] ||
+       [ -z "$SOCKS_PASS" ] ||
+       [ -z "$SOCKS_HOST" ] ||
        [ -z "$SOCKS_PORT" ]; then
         echo "错误：无法解析 SOCKS5 地址、端口或账号密码"
-        exit 1
+        continue
     fi
 
     case "$SOCKS_PORT" in
         *[!0-9]*)
             echo "错误：端口必须为数字"
-            exit 1
+            continue
             ;;
     esac
 
+    if [ "$SOCKS_PORT" -lt 1 ] || [ "$SOCKS_PORT" -gt 65535 ]; then
+        echo "错误：端口范围必须为 1-65535"
+        continue
+    fi
+
     case "$SOCKS_USER$SOCKS_PASS$SOCKS_HOST" in
         *['"\\']*)
-            echo "错误：账号、密码或地址包含当前脚本不支持的特殊字符"
-            exit 1
+            echo "错误：账号、密码或地址包含不支持的特殊字符"
+            continue
             ;;
     esac
 
     TAG="socks-$SUFFIX"
     UUID="$(cat /proc/sys/kernel/random/uuid)"
 
-    if [ ! -f "$CONFIG" ]; then
-        echo "错误：找不到配置文件 $CONFIG"
-        exit 1
+    if [ ! -f "$CONFIG" ] || [ ! -x "$XRAY" ]; then
+        echo "错误：找不到配置文件或 Xray 可执行文件"
+        continue
     fi
 
-    if [ ! -x "$Xray" ]; then
-        echo "错误：找不到可执行的 Xray：$Xray"
-        exit 1
-    fi
-
-    if grep -q "\"email\"[[:space:]]*:[[:space:]]*\"$TAG\"" "$CONFIG" ||
-       grep -q "\"tag\"[[:space:]]*:[[:space:]]*\"$TAG\"" "$CONFIG"; then
+    if grep -Fq "\"email\": \"$TAG\"" "$CONFIG" ||
+       grep -Fq "\"tag\": \"$TAG\"" "$CONFIG"; then
         echo "错误：标签 $TAG 已存在"
-        exit 1
+        continue
     fi
 
-    # 确认当前配置包含需要修改的数组
-    grep -q '"clients"[[:space:]]*:' "$CONFIG" || {
-        echo "错误：没有找到 VLESS clients 数组"
-        exit 1
-    }
+    # 当前配置必须尚未包含 routing，且具有 clients/outbounds
+    if grep -q '"routing"[[:space:]]*:' "$CONFIG"; then
+        echo "错误：当前配置已经存在 routing，请勿重复添加"
+        echo "需要针对现有 routing 合并规则后再执行"
+        continue
+    fi
 
-    grep -q '"outbounds"[[:space:]]*:' "$CONFIG" || {
-        echo "错误：没有找到 outbounds 数组"
-        exit 1
-    }
-
-    grep -q '"rules"[[:space:]]*:' "$CONFIG" || {
-        echo "错误：没有找到 routing.rules 数组"
-        exit 1
-    }
+    if ! grep -q '"clients"[[:space:]]*:' "$CONFIG" ||
+       ! grep -q '"outbounds"[[:space:]]*:' "$CONFIG"; then
+        echo "错误：未找到 clients 或 outbounds 数组"
+        continue
+    fi
 
     BACKUP="${CONFIG}.bak.$(date +%Y%m%d%H%M%S)"
     TMP1="/tmp/suoha-socks-1.$$"
     TMP2="/tmp/suoha-socks-2.$$"
     TMP3="/tmp/suoha-socks-3.$$"
 
-    cp "$CONFIG" "$BACKUP" || exit 1
+    cp "$CONFIG" "$BACKUP" || {
+        echo "错误：备份配置失败"
+        continue
+    }
 
-    # 第一步：向 VLESS clients 数组追加客户端
-    # 适配当前配置中 clients 数组结束行的 16 空格缩进
+    # 第一步：向 clients 数组追加 VLESS 客户端
     awk -v uuid="$UUID" -v tag="$TAG" '
         /"clients"[[:space:]]*:/ { inside=1 }
-        inside && /^                \]/ {
-            print "                ,"
-            print "                {\"id\":\"" uuid "\",\"email\":\"" tag "\"}"
+        inside && /^[[:space:]]*\][[:space:]]*,?[[:space:]]*$/ {
+            print "                                        ,"
+            print "                                        {"
+            print "                                                \"id\": \"" uuid "\","
+            print "                                                \"email\": \"" tag "\""
+            print "                                        }"
             inside=0
             found=1
         }
         { print }
         END { if (!found) exit 2 }
     ' "$CONFIG" > "$TMP1" || {
-        echo "错误：无法安全定位 clients 数组"
+        echo "错误：定位 clients 数组失败，原配置未修改"
         rm -f "$TMP1" "$TMP2" "$TMP3"
-        exit 1
+        continue
     }
 
-    # 第二步：追加 SOCKS 出站
-    # 适配当前配置中 outbounds 外层数组结束行的 8 空格缩进
+    # 第二步：向 outbounds 数组追加 SOCKS 出站
     awk -v tag="$TAG" -v host="$SOCKS_HOST" \
         -v port="$SOCKS_PORT" -v user="$SOCKS_USER" \
         -v pass="$SOCKS_PASS" '
         /"outbounds"[[:space:]]*:/ { inside=1 }
-        inside && /^        \]/ {
-            print "        ,"
-            print "        {"
-            print "          \"tag\": \"" tag "\","
-            print "          \"protocol\": \"socks\","
-            print "          \"settings\": {"
-            print "            \"servers\": [{"
-            print "              \"address\": \"" host "\","
-            print "              \"port\": " port ","
-            print "              \"users\": [{\"user\": \"" user "\", \"pass\": \"" pass "\"}]"
-            print "            }]"
-            print "          }"
-            print "        }"
+        inside && /^[[:space:]]*\][[:space:]]*,?[[:space:]]*$/ {
+            print "                ,"
+            print "                {"
+            print "                        \"tag\": \"" tag "\","
+            print "                        \"protocol\": \"socks\","
+            print "                        \"settings\": {"
+            print "                                \"servers\": ["
+            print "                                        {"
+            print "                                                \"address\": \"" host "\","
+            print "                                                \"port\": " port ","
+            print "                                                \"users\": ["
+            print "                                                        {"
+            print "                                                                \"user\": \"" user "\","
+            print "                                                                \"pass\": \"" pass "\""
+            print "                                                        }"
+            print "                                                ]"
+            print "                                        }"
+            print "                                ]"
+            print "                        }"
+            print "                }"
             inside=0
             found=1
         }
         { print }
         END { if (!found) exit 2 }
     ' "$TMP1" > "$TMP2" || {
-        echo "错误：无法安全定位 outbounds 数组"
+        echo "错误：定位 outbounds 数组失败，原配置未修改"
         rm -f "$TMP1" "$TMP2" "$TMP3"
-        exit 1
+        continue
     }
 
-    # 第三步：追加按 email 匹配的路由规则
-    # 适配当前配置中 routing.rules 数组结束行的 12 空格缩进
+    # 第三步：在根对象中创建 routing.rules
     awk -v tag="$TAG" '
-        /"rules"[[:space:]]*:/ { inside=1 }
-        inside && /^            \]/ {
-            print "            ,"
-            print "            {"
-            print "              \"type\": \"field\","
-            print "              \"inboundTag\": [\"vless-ws\"],"
-            print "              \"user\": [\"" tag "\"],"
-            print "              \"outboundTag\": \"" tag "\""
-            print "            }"
-            inside=0
-            found=1
+        { lines[NR]=$0 }
+        END {
+            if (NR < 2 || lines[NR] !~ /^[[:space:]]*}[[:space:]]*$/)
+                exit 2
+
+            for (i=1; i<NR; i++)
+                print lines[i]
+
+            print "        ,"
+            print "        \"routing\": {"
+            print "                \"rules\": ["
+            print "                        {"
+            print "                                \"type\": \"field\","
+            print "                                \"user\": [\"" tag "\"],"
+            print "                                \"outboundTag\": \"" tag "\""
+            print "                        }"
+            print "                ]"
+            print "        }"
+            print lines[NR]
         }
-        { print }
-        END { if (!found) exit 2 }
     ' "$TMP2" > "$TMP3" || {
-        echo "错误：无法安全定位 routing.rules 数组"
+        echo "错误：无法在根对象中创建 routing，原配置未修改"
         rm -f "$TMP1" "$TMP2" "$TMP3"
-        exit 1
+        continue
     }
 
-    # 检查生成内容是否包含三个必要部分
-    grep -q "\"email\":\"$TAG\"" "$TMP3" || {
-        echo "错误：未找到新增客户端"
-        rm -f "$TMP1" "$TMP2" "$TMP3"
-        exit 1
-    }
-
-    grep -q "\"tag\": \"$TAG\"" "$TMP3" || {
-        echo "错误：未找到新增出站"
-        rm -f "$TMP1" "$TMP2" "$TMP3"
-        exit 1
-    }
-
-    grep -q "\"outboundTag\": \"$TAG\"" "$TMP3" || {
-        echo "错误：未找到新增路由规则"
-        rm -f "$TMP1" "$TMP2" "$TMP3"
-        exit 1
-    }
-
-    # 测试配置通过后才替换原配置
-    if ! "$Xray" run -test -config "$TMP3"; then
+    # 测试通过后才覆盖原配置
+    if ! "$XRAY" run -test -config "$TMP3"; then
         echo "错误：Xray 配置测试失败，原配置未修改"
         echo "备份文件：$BACKUP"
         rm -f "$TMP1" "$TMP2" "$TMP3"
-        exit 1
+        continue
     fi
 
-    cat "$TMP3" > "$CONFIG" || {
-        echo "错误：写入配置失败，备份文件：$BACKUP"
+    if ! cat "$TMP3" > "$CONFIG"; then
+        echo "错误：写入失败，请检查备份：$BACKUP"
+        cp "$BACKUP" "$CONFIG"
         rm -f "$TMP1" "$TMP2" "$TMP3"
-        exit 1
-    }
+        continue
+    fi
 
     rm -f "$TMP1" "$TMP2" "$TMP3"
 
-    # 追加分享链接，不覆盖原有节点
-    if [ -n "$domain" ] && [ -n "$urlpath" ]; then
-        {
-            echo ""
-            echo "===== SOCKS5 节点：$TAG ====="
-            echo "vless://$UUID@cf.877774.xyz:443?encryption=none&security=tls&type=ws&host=$domain&path=$urlpath&sni=$domain#$TAG"
-            echo "vless://$UUID@cf.877774.xyz:80?encryption=none&security=none&type=ws&host=$domain&path=$urlpath#$TAG"
-        } >> "$LINKS"
-
-        echo "分享链接已追加到 $LINKS"
-    else
-        echo "警告：domain 或 urlpath 未定义，未生成分享链接"
-    fi
+    # 追加分享链接，不覆盖原有节点列表
+    {
+        echo ""
+        echo "===== SOCKS5 节点：$TAG ====="
+        echo "vless://$UUID@cf.877774.xyz:443?encryption=none&security=tls&type=ws&host=$DOMAIN&path=$URLPATH&sni=$DOMAIN#$TAG"
+        echo "vless://$UUID@cf.877774.xyz:80?encryption=none&security=none&type=ws&host=$DOMAIN&path=$URLPATH#$TAG"
+    } >> "$LINKS"
 
     echo ""
-    echo "SOCKS5 节点添加完成"
+    echo "SOCKS5 节点添加成功"
     echo "UUID：$UUID"
     echo "路由标签：$TAG"
     echo "SOCKS5 地址：$SOCKS_HOST:$SOCKS_PORT"
     echo "配置备份：$BACKUP"
-    echo "请按原脚本的服务管理方式重启 Xray，使配置生效。"
-fi
-if [ \$menu == 0 ]
-then
-	echo 退出成功
-	exit
+    echo "分享链接已追加到：$LINKS"
+    echo "请使用原脚本的服务管理方式重启 Xray。"
 fi
 done
 EOF
