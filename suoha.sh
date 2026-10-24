@@ -1189,10 +1189,10 @@ echo 3.卸载服务
 echo 4.清空缓存
 echo 5.管理服务
 echo -e 0.退出脚本'\n'
-read -p "请选择模式(默认1):" mode
+read -p "请选择模式(默认2):" mode
 if [ -z "$mode" ]
 then
-	mode=1
+	mode=2
 fi
 # 在选择安装服务时再次检查
 if [ $mode == 2 ]; then
