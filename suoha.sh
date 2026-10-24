@@ -506,7 +506,7 @@ if [ -z "\$menu" ]
 then
 	menu=0
 fi
-elif [ \$menu == 0 ]
+if [ \$menu == 0 ]
 then
 	echo 退出成功
 	exit
