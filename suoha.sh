@@ -572,7 +572,7 @@ then
 	echo "nameserver 1.1.1.1" > /etc/resolv.conf
 	echo "nameserver 1.0.0.1" >> /etc/resolv.conf
 
-elif [ "$menu" == 8 ]
+elif [ \$menu == 8 ]
 then
     CONFIG="/opt/suoha/config.json"
     LINKS="/opt/suoha/v2ray.txt"
