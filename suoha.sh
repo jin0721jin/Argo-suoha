@@ -817,7 +817,6 @@ if [ "$menu" = "8" ]; then
     echo "分享链接已追加到：$LINKS"
     echo "请使用原脚本的服务管理方式重启 Xray。"
 fi
-done
 EOF
 else
 #创建命令链接
@@ -1145,7 +1144,6 @@ if [ "$menu" = "8" ]; then
     echo "分享链接已追加到：$LINKS"
     echo "请使用原脚本的服务管理方式重启 Xray。"
 fi
-done
 EOF
 fi
 chmod +x /opt/suoha/suoha.sh
