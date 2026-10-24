@@ -1145,7 +1145,7 @@ then
     echo "配置备份：$BACKUP"
     echo "请按原脚本的服务管理方式重启 Xray，使配置生效。"
 fi
-elif [ \$menu == 0 ]
+if [ \$menu == 0 ]
 then
 	echo 退出成功
 	exit
