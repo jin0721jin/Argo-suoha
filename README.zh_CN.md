@@ -77,7 +77,7 @@
 在您的 VPS 终端中执行以下命令即可（支持 Debian / Ubuntu / CentOS / Alpine）：
 **GitHub 原始链接**
 ```bash
-bash <(curl -sL https://raw.githubusercontent.com/longshen2020/Argo-suoha/refs/heads/main/suoha.sh | tr -d '\r')
+bash <(curl -sL https://raw.githubusercontent.com/jin0721jin/Argo-suoha/refs/heads/main/suoha.sh | tr -d '\r')
 ```
 **📌根据菜单选择模式**
 
