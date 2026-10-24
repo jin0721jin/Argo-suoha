@@ -579,7 +579,7 @@ then
 
 
 # 菜单 8：添加 SOCKS5 分流节点
-if [ "$menu" = "8" ]; then
+elif [ "$menu" = "8" ]; then
     CONFIG="/opt/suoha/config.json"
     LINKS="/opt/suoha/v2ray.txt"
     XRAY="/opt/suoha/xray"
@@ -817,6 +817,7 @@ if [ "$menu" = "8" ]; then
     echo "分享链接已追加到：$LINKS"
     echo "请使用原脚本的服务管理方式重启 Xray。"
 fi
+done
 EOF
 else
 #创建命令链接
@@ -906,7 +907,7 @@ then
 	echo "nameserver 1.0.0.1" >> /etc/resolv.conf
 
 # 菜单 8：添加 SOCKS5 分流节点
-if [ "$menu" = "8" ]; then
+elif [ "$menu" = "8" ]; then
     CONFIG="/opt/suoha/config.json"
     LINKS="/opt/suoha/v2ray.txt"
     XRAY="/opt/suoha/xray"
@@ -1144,6 +1145,7 @@ if [ "$menu" = "8" ]; then
     echo "分享链接已追加到：$LINKS"
     echo "请使用原脚本的服务管理方式重启 Xray。"
 fi
+done
 EOF
 fi
 chmod +x /opt/suoha/suoha.sh
