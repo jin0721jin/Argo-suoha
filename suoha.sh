@@ -835,6 +835,7 @@ echo 4.重启服务
 echo 5.卸载服务
 echo 6.查看当前v2ray链接
 echo 7.更换cloudflare dns
+echo 8.添加socks出口链接
 echo 0.退出
 read -p "请选择菜单(默认0): " menu
 if [ -z "\$menu" ]
@@ -904,6 +905,246 @@ elif [ \$menu == 7 ]
 then
 	echo "nameserver 1.1.1.1" > /etc/resolv.conf
 	echo "nameserver 1.0.0.1" >> /etc/resolv.conf
+elif [ \$menu == 8 ]
+then
+    CONFIG="/opt/suoha/config.json"
+    LINKS="/opt/suoha/v2ray.txt"
+    Xray="/opt/suoha/xray"
+
+    echo "请输入 SOCKS5 分享链接："
+    echo "示例：socks5://user-af:globe-server-af@10.91.0.1:8080#user-af"
+    read -r SOCKS_URL
+
+    case "$SOCKS_URL" in
+        socks5://*) ;;
+        *)
+            echo "错误：链接必须以 socks5:// 开头"
+            exit 1
+            ;;
+    esac
+
+    SUFFIX="${SOCKS_URL##*#}"
+    if [ "$SUFFIX" = "$SOCKS_URL" ]; then
+        echo "错误：链接必须包含 #标签后缀"
+        exit 1
+    fi
+
+    case "$SUFFIX" in
+        ""|*[!a-zA-Z0-9_-]*)
+            echo "错误：标签后缀只允许字母、数字、下划线和连字符"
+            exit 1
+            ;;
+    esac
+
+    URL_BODY="${SOCKS_URL#socks5://}"
+    URL_BODY="${URL_BODY%%#*}"
+
+    case "$URL_BODY" in
+        *@*) ;;
+        *)
+            echo "错误：链接缺少用户名和密码"
+            exit 1
+            ;;
+    esac
+
+    AUTH="${URL_BODY%@*}"
+    HOSTPORT="${URL_BODY##*@}"
+    SOCKS_USER="${AUTH%%:*}"
+    SOCKS_PASS="${AUTH#*:}"
+    SOCKS_HOST="${HOSTPORT%:*}"
+    SOCKS_PORT="${HOSTPORT##*:}"
+
+    if [ -z "$SOCKS_USER" ] || [ "$SOCKS_PASS" = "$AUTH" ] ||
+       [ -z "$SOCKS_PASS" ] || [ -z "$SOCKS_HOST" ] ||
+       [ -z "$SOCKS_PORT" ]; then
+        echo "错误：无法解析 SOCKS5 地址、端口或账号密码"
+        exit 1
+    fi
+
+    case "$SOCKS_PORT" in
+        *[!0-9]*)
+            echo "错误：端口必须为数字"
+            exit 1
+            ;;
+    esac
+
+    case "$SOCKS_USER$SOCKS_PASS$SOCKS_HOST" in
+        *['"\\']*)
+            echo "错误：账号、密码或地址包含当前脚本不支持的特殊字符"
+            exit 1
+            ;;
+    esac
+
+    TAG="socks-$SUFFIX"
+    UUID="$(cat /proc/sys/kernel/random/uuid)"
+
+    if [ ! -f "$CONFIG" ]; then
+        echo "错误：找不到配置文件 $CONFIG"
+        exit 1
+    fi
+
+    if [ ! -x "$Xray" ]; then
+        echo "错误：找不到可执行的 Xray：$Xray"
+        exit 1
+    fi
+
+    if grep -q "\"email\"[[:space:]]*:[[:space:]]*\"$TAG\"" "$CONFIG" ||
+       grep -q "\"tag\"[[:space:]]*:[[:space:]]*\"$TAG\"" "$CONFIG"; then
+        echo "错误：标签 $TAG 已存在"
+        exit 1
+    fi
+
+    # 确认当前配置包含需要修改的数组
+    grep -q '"clients"[[:space:]]*:' "$CONFIG" || {
+        echo "错误：没有找到 VLESS clients 数组"
+        exit 1
+    }
+
+    grep -q '"outbounds"[[:space:]]*:' "$CONFIG" || {
+        echo "错误：没有找到 outbounds 数组"
+        exit 1
+    }
+
+    grep -q '"rules"[[:space:]]*:' "$CONFIG" || {
+        echo "错误：没有找到 routing.rules 数组"
+        exit 1
+    }
+
+    BACKUP="${CONFIG}.bak.$(date +%Y%m%d%H%M%S)"
+    TMP1="/tmp/suoha-socks-1.$$"
+    TMP2="/tmp/suoha-socks-2.$$"
+    TMP3="/tmp/suoha-socks-3.$$"
+
+    cp "$CONFIG" "$BACKUP" || exit 1
+
+    # 第一步：向 VLESS clients 数组追加客户端
+    # 适配当前配置中 clients 数组结束行的 16 空格缩进
+    awk -v uuid="$UUID" -v tag="$TAG" '
+        /"clients"[[:space:]]*:/ { inside=1 }
+        inside && /^                \]/ {
+            print "                ,"
+            print "                {\"id\":\"" uuid "\",\"email\":\"" tag "\"}"
+            inside=0
+            found=1
+        }
+        { print }
+        END { if (!found) exit 2 }
+    ' "$CONFIG" > "$TMP1" || {
+        echo "错误：无法安全定位 clients 数组"
+        rm -f "$TMP1" "$TMP2" "$TMP3"
+        exit 1
+    }
+
+    # 第二步：追加 SOCKS 出站
+    # 适配当前配置中 outbounds 外层数组结束行的 8 空格缩进
+    awk -v tag="$TAG" -v host="$SOCKS_HOST" \
+        -v port="$SOCKS_PORT" -v user="$SOCKS_USER" \
+        -v pass="$SOCKS_PASS" '
+        /"outbounds"[[:space:]]*:/ { inside=1 }
+        inside && /^        \]/ {
+            print "        ,"
+            print "        {"
+            print "          \"tag\": \"" tag "\","
+            print "          \"protocol\": \"socks\","
+            print "          \"settings\": {"
+            print "            \"servers\": [{"
+            print "              \"address\": \"" host "\","
+            print "              \"port\": " port ","
+            print "              \"users\": [{\"user\": \"" user "\", \"pass\": \"" pass "\"}]"
+            print "            }]"
+            print "          }"
+            print "        }"
+            inside=0
+            found=1
+        }
+        { print }
+        END { if (!found) exit 2 }
+    ' "$TMP1" > "$TMP2" || {
+        echo "错误：无法安全定位 outbounds 数组"
+        rm -f "$TMP1" "$TMP2" "$TMP3"
+        exit 1
+    }
+
+    # 第三步：追加按 email 匹配的路由规则
+    # 适配当前配置中 routing.rules 数组结束行的 12 空格缩进
+    awk -v tag="$TAG" '
+        /"rules"[[:space:]]*:/ { inside=1 }
+        inside && /^            \]/ {
+            print "            ,"
+            print "            {"
+            print "              \"type\": \"field\","
+            print "              \"inboundTag\": [\"vless-ws\"],"
+            print "              \"user\": [\"" tag "\"],"
+            print "              \"outboundTag\": \"" tag "\""
+            print "            }"
+            inside=0
+            found=1
+        }
+        { print }
+        END { if (!found) exit 2 }
+    ' "$TMP2" > "$TMP3" || {
+        echo "错误：无法安全定位 routing.rules 数组"
+        rm -f "$TMP1" "$TMP2" "$TMP3"
+        exit 1
+    }
+
+    # 检查生成内容是否包含三个必要部分
+    grep -q "\"email\":\"$TAG\"" "$TMP3" || {
+        echo "错误：未找到新增客户端"
+        rm -f "$TMP1" "$TMP2" "$TMP3"
+        exit 1
+    }
+
+    grep -q "\"tag\": \"$TAG\"" "$TMP3" || {
+        echo "错误：未找到新增出站"
+        rm -f "$TMP1" "$TMP2" "$TMP3"
+        exit 1
+    }
+
+    grep -q "\"outboundTag\": \"$TAG\"" "$TMP3" || {
+        echo "错误：未找到新增路由规则"
+        rm -f "$TMP1" "$TMP2" "$TMP3"
+        exit 1
+    }
+
+    # 测试配置通过后才替换原配置
+    if ! "$Xray" run -test -config "$TMP3"; then
+        echo "错误：Xray 配置测试失败，原配置未修改"
+        echo "备份文件：$BACKUP"
+        rm -f "$TMP1" "$TMP2" "$TMP3"
+        exit 1
+    fi
+
+    cat "$TMP3" > "$CONFIG" || {
+        echo "错误：写入配置失败，备份文件：$BACKUP"
+        rm -f "$TMP1" "$TMP2" "$TMP3"
+        exit 1
+    }
+
+    rm -f "$TMP1" "$TMP2" "$TMP3"
+
+    # 追加分享链接，不覆盖原有节点
+    if [ -n "$domain" ] && [ -n "$urlpath" ]; then
+        {
+            echo ""
+            echo "===== SOCKS5 节点：$TAG ====="
+            echo "vless://$UUID@cf.877774.xyz:443?encryption=none&security=tls&type=ws&host=$domain&path=$urlpath&sni=$domain#$TAG"
+            echo "vless://$UUID@cf.877774.xyz:80?encryption=none&security=none&type=ws&host=$domain&path=$urlpath#$TAG"
+        } >> "$LINKS"
+
+        echo "分享链接已追加到 $LINKS"
+    else
+        echo "警告：domain 或 urlpath 未定义，未生成分享链接"
+    fi
+
+    echo ""
+    echo "SOCKS5 节点添加完成"
+    echo "UUID：$UUID"
+    echo "路由标签：$TAG"
+    echo "SOCKS5 地址：$SOCKS_HOST:$SOCKS_PORT"
+    echo "配置备份：$BACKUP"
+    echo "请按原脚本的服务管理方式重启 Xray，使配置生效。"
+fi
 elif [ \$menu == 0 ]
 then
 	echo 退出成功
