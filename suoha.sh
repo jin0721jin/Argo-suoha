@@ -506,6 +506,11 @@ if [ -z "\$menu" ]
 then
 	menu=0
 fi
+elif [ \$menu == 0 ]
+then
+	echo 退出成功
+	exit
+fi
 if [ \$menu == 1 ]
 then
 	clear
@@ -811,11 +816,6 @@ then
     echo "SOCKS5 地址：$SOCKS_HOST:$SOCKS_PORT"
     echo "配置备份：$BACKUP"
     echo "请按原脚本的服务管理方式重启 Xray，使配置生效。"
-fi
-elif [ \$menu == 0 ]
-then
-	echo 退出成功
-	exit
 fi
 done
 EOF
