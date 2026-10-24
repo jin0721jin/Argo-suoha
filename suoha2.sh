@@ -1,0 +1,1229 @@
+#!/bin/bash
+# onekey suoha
+linux_os=("Debian" "Ubuntu" "CentOS" "Fedora" "Alpine")
+linux_update=("apt update" "apt update" "yum -y update" "yum -y update" "apk update")
+linux_install=("apt -y install" "apt -y install" "yum -y install" "yum -y install" "apk add -f")
+n=0
+for i in `echo ${linux_os[@]}`
+do
+	if [ $i == $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') ]
+	then
+		break
+	else
+		n=$[$n+1]
+	fi
+done
+if [ $n == 5 ]
+then
+	echo 当前系统$(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2)没有适配
+	echo 默认使用APT包管理器
+	n=0
+fi
+if [ -z $(type -P unzip) ]
+then
+	${linux_update[$n]}
+	${linux_install[$n]} unzip
+fi
+if [ -z $(type -P curl) ]
+then
+	${linux_update[$n]}
+	${linux_install[$n]} curl
+fi
+if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') != "Alpine" ]
+then
+	if [ -z $(type -P systemctl) ]
+	then
+		${linux_update[$n]}
+		${linux_install[$n]} systemctl
+	fi
+fi
+
+
+function quicktunnel(){
+case "$(uname -m)" in
+	x86_64 | x64 | amd64 )
+	curl -L https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip -o xray.zip
+	curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared-linux
+	;;
+	i386 | i686 )
+	curl -L https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-32.zip -o xray.zip
+	curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-386 -o cloudflared-linux
+	;;
+	armv8 | arm64 | aarch64 )
+	echo arm64
+	curl -L https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-arm64-v8a.zip -o xray.zip
+	curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64 -o cloudflared-linux
+	;;
+	armv7l )
+	curl -L https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-arm32-v7a.zip -o xray.zip
+	curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm -o cloudflared-linux
+	;;
+	* )
+	echo 当前架构$(uname -m)没有适配
+	exit
+	;;
+esac
+mkdir xray
+unzip -d xray xray.zip
+chmod +x cloudflared-linux xray/xray
+rm -rf xray.zip
+uuid=$(cat /proc/sys/kernel/random/uuid)
+urlpath=$(echo $uuid | awk -F- '{print $1}')
+port=$[$RANDOM+10000]
+if [ $protocol == 1 ]
+then
+cat>xray/config.json<<EOF
+{
+	"inbounds": [
+		{
+			"port": $port,
+			"listen": "localhost",
+			"protocol": "vmess",
+			"settings": {
+				"clients": [
+					{
+						"id": "$uuid",
+						"alterId": 0
+					}
+				]
+			},
+			"streamSettings": {
+				"network": "ws",
+				"wsSettings": {
+					"path": "$urlpath"
+				}
+			}
+		}
+	],
+	"outbounds": [
+		{
+			"protocol": "freedom",
+			"settings": {}
+		}
+	]
+}
+EOF
+fi
+if [ $protocol == 2 ]
+then
+cat>xray/config.json<<EOF
+{
+	"inbounds": [
+		{
+			"port": $port,
+			"listen": "localhost",
+			"protocol": "vless",
+			"settings": {
+				"decryption": "none",
+				"clients": [
+					{
+						"id": "$uuid"
+					}
+				]
+			},
+			"streamSettings": {
+				"network": "ws",
+				"wsSettings": {
+					"path": "$urlpath"
+				}
+			}
+		}
+	],
+	"outbounds": [
+		{
+			"protocol": "freedom",
+			"settings": {}
+		}
+	]
+}
+EOF
+fi
+./xray/xray run>/dev/null 2>&1 &
+./cloudflared-linux tunnel --url http://localhost:$port --no-autoupdate --edge-ip-version auto --protocol http2 >argo.log 2>&1 &
+sleep 1
+n=0
+while true
+do
+n=$[$n+1]
+clear
+echo 等待cloudflare argo生成地址 已等待 $n 秒
+argo=$(cat argo.log | grep trycloudflare.com | awk 'NR==2{print}' | awk -F// '{print $2}' | awk '{print $1}')
+if [ $n == 15 ]
+then
+	n=0
+	if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
+	then
+		kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $1}') >/dev/null 2>&1
+	else
+		kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $2}') >/dev/null 2>&1
+	fi
+	rm -rf argo.log
+	clear
+	echo argo获取超时,重试中
+	./cloudflared-linux tunnel --url http://localhost:$port --no-autoupdate --edge-ip-version auto --protocol http2 >argo.log 2>&1 &
+	sleep 1
+elif [ -z "$argo" ]
+then
+	sleep 1
+else
+	rm -rf argo.log
+	break
+fi
+done
+clear
+if [ $protocol == 1 ]
+then
+	echo -e vmess链接已经生成, cf.877774.xyz 可替换为CF优选IP'\n' > v2ray.txt
+	if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
+	then
+		echo 'vmess://'$(echo '{"add":"cf.877774.xyz","aid":"0","host":"'$argo'","id":"'$uuid'","net":"ws","path":"'$urlpath'","port":"443","ps":"'$(echo $isp | sed -e 's/_/ /g')'_tls","tls":"tls","type":"none","v":"2"}' | base64 | awk '{ORS=(NR%76==0?RS:"");}1') >> v2ray.txt
+	else
+		echo 'vmess://'$(echo '{"add":"cf.877774.xyz","aid":"0","host":"'$argo'","id":"'$uuid'","net":"ws","path":"'$urlpath'","port":"443","ps":"'$(echo $isp | sed -e 's/_/ /g')'_tls","tls":"tls","type":"none","v":"2"}' | base64 -w 0) >> v2ray.txt
+	fi
+	echo -e '\n'端口 443 可改为 2053 2083 2087 2096 8443'\n' >> v2ray.txt
+	if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
+	then
+		echo 'vmess://'$(echo '{"add":"cf.877774.xyz","aid":"0","host":"'$argo'","id":"'$uuid'","net":"ws","path":"'$urlpath'","port":"80","ps":"'$(echo $isp | sed -e 's/_/ /g')'","tls":"","type":"none","v":"2"}' | base64 | awk '{ORS=(NR%76==0?RS:"");}1') >> v2ray.txt
+	else
+		echo 'vmess://'$(echo '{"add":"cf.877774.xyz","aid":"0","host":"'$argo'","id":"'$uuid'","net":"ws","path":"'$urlpath'","port":"80","ps":"'$(echo $isp | sed -e 's/_/ /g')'","tls":"","type":"none","v":"2"}' | base64 -w 0) >> v2ray.txt
+	fi
+	echo -e '\n'端口 80 可改为 8080 8880 2052 2082 2086 2095 >> v2ray.txt
+fi
+if [ $protocol == 2 ]
+then
+	echo -e vless链接已经生成, cf.877774.xyz 可替换为CF优选IP'\n' > v2ray.txt
+	echo 'vless://'$uuid'@cf.877774.xyz:443?encryption=none&security=tls&sni='$domain'&type=ws&host='$argo'&path='$urlpath'#'$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')'_tls' >> v2ray.txt
+	echo -e '\n'端口 443 可改为 2053 2083 2087 2096 8443'\n' >> v2ray.txt
+	echo 'vless://'$uuid'@cf.877774.xyz:80?encryption=none&security=none&type=ws&host='$argo'&path='$urlpath'#'$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')'' >> v2ray.txt
+	echo -e '\n'端口 80 可改为 8080 8880 2052 2082 2086 2095 >> v2ray.txt
+fi
+rm -rf argo.log
+cat v2ray.txt
+echo -e '\n'信息已经保存在 /root/v2ray.txt,再次查看请运行 cat /root/v2ray.txt
+echo -e 注意：梭哈模式重启服务器后失效！！！
+}
+
+function installtunnel(){
+#创建主目录
+mkdir -p /opt/suoha/ >/dev/null 2>&1
+case "$(uname -m)" in
+	x86_64 | x64 | amd64 )
+	curl -L https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip -o xray.zip
+	curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared-linux
+	;;
+	i386 | i686 )
+	curl -L https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-32.zip -o xray.zip
+	curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-386 -o cloudflared-linux
+	;;
+	armv8 | arm64 | aarch64 )
+	echo arm64
+	curl -L https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-arm64-v8a.zip -o xray.zip
+	curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64 -o cloudflared-linux
+	;;
+	armv71 )
+	curl -L https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-arm32-v7a.zip -o xray.zip
+	curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm -o cloudflared-linux
+	;;
+	* )
+	echo 当前架构$(uname -m)没有适配
+	exit
+	;;
+esac
+mkdir xray
+unzip -d xray xray.zip
+chmod +x cloudflared-linux xray/xray
+mv cloudflared-linux /opt/suoha/
+mv xray/xray /opt/suoha/
+rm -rf xray xray.zip
+uuid=$(cat /proc/sys/kernel/random/uuid)
+urlpath=$(echo $uuid | awk -F- '{print $1}')
+port=$[$RANDOM+10000]
+if [ $protocol == 1 ]
+then
+cat>/opt/suoha/config.json<<EOF
+{
+	"inbounds": [
+		{
+			"port": $port,
+			"listen": "localhost",
+			"protocol": "vmess",
+			"settings": {
+				"clients": [
+					{
+						"id": "$uuid",
+						"alterId": 0
+					}
+				]
+			},
+			"streamSettings": {
+				"network": "ws",
+				"wsSettings": {
+					"path": "$urlpath"
+				}
+			}
+		}
+	],
+	"outbounds": [
+		{
+			"protocol": "freedom",
+			"settings": {}
+		}
+	]
+}
+EOF
+fi
+if [ $protocol == 2 ]
+then
+cat>/opt/suoha/config.json<<EOF
+{
+	"inbounds": [
+		{
+			"port": $port,
+			"listen": "localhost",
+			"protocol": "vless",
+			"settings": {
+				"decryption": "none",
+				"clients": [
+					{
+						"id": "$uuid"
+					}
+				]
+			},
+			"streamSettings": {
+				"network": "ws",
+				"wsSettings": {
+					"path": "$urlpath"
+				}
+			}
+		}
+	],
+	"outbounds": [
+		{
+			"protocol": "freedom",
+			"settings": {}
+		}
+	]
+}
+EOF
+fi
+clear
+echo 复制下面的链接,用浏览器打开并授权需要绑定的域名
+echo 在网页中授权完毕后会继续进行下一步设置
+/opt/suoha/cloudflared-linux --edge-ip-version auto --protocol http2 tunnel login
+clear
+/opt/suoha/cloudflared-linux --edge-ip-version auto --protocol http2 tunnel list >argo.log 2>&1
+echo -e ARGO TUNNEL当前已经绑定的服务如下'\n'
+sed 1,2d argo.log | awk '{print $2}'
+echo -e '\n'自定义一个完整二级域名,例如 xxx.example.com
+echo 必须是网页里面绑定授权的域名才生效,不能乱输入
+read -p "输入绑定域名的完整二级域名: " domain
+if [ -z "$domain" ]
+then
+	echo 没有设置域名
+	exit
+elif [ $(echo $domain | grep "\." | wc -l) == 0 ]
+then
+	echo 域名格式不正确
+	exit
+fi
+name=$(echo $domain | awk -F\. '{print $1}')
+if [ $(sed 1,2d argo.log | awk '{print $2}' | grep -w $name | wc -l) == 0 ]
+then
+	echo 创建TUNNEL $name
+	/opt/suoha/cloudflared-linux --edge-ip-version auto --protocol http2 tunnel create $name >argo.log 2>&1
+	echo TUNNEL $name 创建成功
+else
+	echo TUNNEL $name 已经存在
+	if [ ! -f "/root/.cloudflared/$(sed 1,2d argo.log | awk '{print $1" "$2}' | grep -w $name | awk '{print $1}').json" ]
+	then
+		echo /root/.cloudflared/$(sed 1,2d argo.log | awk '{print $1" "$2}' | grep -w $name | awk '{print $1}').json 文件不存在
+		echo 清理TUNNEL $name
+		/opt/suoha/cloudflared-linux --edge-ip-version auto --protocol http2 tunnel cleanup $name >argo.log 2>&1
+		echo 删除TUNNEL $name
+		/opt/suoha/cloudflared-linux --edge-ip-version auto --protocol http2 tunnel delete $name >argo.log 2>&1
+		echo 重建TUNNEL $name
+		/opt/suoha/cloudflared-linux --edge-ip-version auto --protocol http2 tunnel create $name >argo.log 2>&1
+	else
+		echo 清理TUNNEL $name
+		/opt/suoha/cloudflared-linux --edge-ip-version auto --protocol http2 tunnel cleanup $name >argo.log 2>&1
+	fi
+fi
+echo 绑定 TUNNEL $name 到域名 $domain
+/opt/suoha/cloudflared-linux --edge-ip-version auto --protocol http2 tunnel route dns --overwrite-dns $name $domain >argo.log 2>&1
+echo $domain 绑定成功
+tunneluuid=$(cut -d= -f2 argo.log)
+if [ $protocol == 1 ]
+then
+	echo -e vmess链接已经生成, cf.877774.xyz 可替换为CF优选IP'\n' >/opt/suoha/v2ray.txt
+	echo 'vmess://'$(echo '{"add":"cf.877774.xyz","aid":"0","host":"'$domain'","id":"'$uuid'","net":"ws","path":"'$urlpath'","port":"443","ps":"'$(echo $isp | sed -e 's/_/ /g')'","tls":"tls","type":"none","v":"2"}' | base64 -w 0) >>/opt/suoha/v2ray.txt
+	echo -e '\n'端口 443 可改为 2053 2083 2087 2096 8443'\n' >>/opt/suoha/v2ray.txt
+	echo 'vmess://'$(echo '{"add":"cf.877774.xyz","aid":"0","host":"'$domain'","id":"'$uuid'","net":"ws","path":"'$urlpath'","port":"80","ps":"'$(echo $isp | sed -e 's/_/ /g')'","tls":"","type":"none","v":"2"}' | base64 -w 0) >>/opt/suoha/v2ray.txt
+	echo -e '\n'端口 80 可改为 8080 8880 2052 2082 2086 2095'\n' >>/opt/suoha/v2ray.txt
+	echo 注意:如果 80 8080 8880 2052 2082 2086 2095 端口无法正常使用 >>/opt/suoha/v2ray.txt
+	echo 请前往 https://dash.cloudflare.com/ >>/opt/suoha/v2ray.txt
+	echo 检查管理面板 SSL/TLS - 边缘证书 - 始终使用HTTPS 是否处于关闭状态 >>/opt/suoha/v2ray.txt
+fi
+if [ $protocol == 2 ]
+then
+	echo -e vless链接已经生成, cf.877774.xyz 可替换为CF优选IP'\n' >/opt/suoha/v2ray.txt
+	echo 'vless://'$uuid'@cf.877774.xyz:443?encryption=none&security=tls&type=ws&host='$domain'&path='$urlpath'&sni='$domain'#'$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')'_tls' >>/opt/suoha/v2ray.txt
+	echo -e '\n'端口 443 可改为 2053 2083 2087 2096 8443'\n' >>/opt/suoha/v2ray.txt
+	echo 'vless://'$uuid'@cf.877774.xyz:80?encryption=none&security=none&type=ws&host='$domain'&path='$urlpath'#'$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')'' >>/opt/suoha/v2ray.txt
+	echo -e '\n'端口 80 可改为 8080 8880 2052 2082 2086 2095'\n' >>/opt/suoha/v2ray.txt
+	echo 注意:如果 80 8080 8880 2052 2082 2086 2095 端口无法正常使用 >>/opt/suoha/v2ray.txt
+	echo 请前往 https://dash.cloudflare.com/ >>/opt/suoha/v2ray.txt
+	echo 检查管理面板 SSL/TLS - 边缘证书 - 始终使用HTTPS 是否处于关闭状态 >>/opt/suoha/v2ray.txt
+fi
+rm -rf argo.log
+cat>/opt/suoha/config.yaml<<EOF
+tunnel: $tunneluuid
+credentials-file: /root/.cloudflared/$tunneluuid.json
+
+ingress:
+  - hostname:
+    service: http://localhost:$port
+EOF
+if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
+then
+cat>/etc/local.d/cloudflared.start<<EOF
+/opt/suoha/cloudflared-linux --edge-ip-version auto --protocol http2 tunnel --config /opt/suoha/config.yaml run $name &
+EOF
+cat>/etc/local.d/xray.start<<EOF
+/opt/suoha/xray run -config /opt/suoha/config.json &
+EOF
+chmod +x /etc/local.d/cloudflared.start /etc/local.d/xray.start
+rc-update add local
+/etc/local.d/cloudflared.start >/dev/null 2>&1
+/etc/local.d/xray.start >/dev/null 2>&1
+else
+#创建服务
+cat>/lib/systemd/system/cloudflared.service<<EOF
+[Unit]
+Description=Cloudflare Tunnel
+After=network.target
+
+[Service]
+TimeoutStartSec=0
+Type=simple
+ExecStart=/opt/suoha/cloudflared-linux --edge-ip-version auto --protocol http2 tunnel --config /opt/suoha/config.yaml run $name
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+EOF
+cat>/lib/systemd/system/xray.service<<EOF
+[Unit]
+Description=Xray
+After=network.target
+
+[Service]
+TimeoutStartSec=0
+Type=simple
+ExecStart=/opt/suoha/xray run -config /opt/suoha/config.json
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl enable cloudflared.service >/dev/null 2>&1
+systemctl enable xray.service >/dev/null 2>&1
+systemctl --system daemon-reload
+systemctl start cloudflared.service
+systemctl start xray.service
+fi
+if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
+then
+#创建命令链接
+cat>/opt/suoha/suoha.sh<<EOF
+#!/bin/bash
+add_socks_route() {
+    CONFIG="/opt/suoha/config.json"
+    XRAY="/opt/suoha/xray"
+    LINKS="/opt/suoha/v2ray.txt"
+
+    # 检查 jq
+    if ! command -v jq >/dev/null 2>&1; then
+        echo "正在安装 jq..."
+        if command -v apk >/dev/null 2>&1; then
+            apk add jq || return 1
+        elif command -v apt-get >/dev/null 2>&1; then
+            apt-get update && apt-get install -y jq || return 1
+        elif command -v dnf >/dev/null 2>&1; then
+            dnf install -y jq || return 1
+        elif command -v yum >/dev/null 2>&1; then
+            yum install -y jq || return 1
+        else
+            echo "无法自动安装 jq，请手动安装。"
+            return 1
+        fi
+    fi
+
+    if [ ! -f "$CONFIG" ] || [ ! -x "$XRAY" ]; then
+        echo "错误：找不到 Xray 配置或执行文件。"
+        return 1
+    fi
+
+    read -r -p "输入 SOCKS5 分享链接: " SOCKS_URL
+
+    case "$SOCKS_URL" in
+        socks5://*) ;;
+        *)
+            echo "格式错误，应以 socks5:// 开头。"
+            return 1
+            ;;
+    esac
+
+    URL_BODY="${SOCKS_URL#socks5://}"
+
+    case "$URL_BODY" in
+        *#*) ;;
+        *)
+            echo "链接必须带有 #标签，例如 #user-am。"
+            return 1
+            ;;
+    esac
+
+    LABEL="${URL_BODY##*#}"
+    URL_BODY="${URL_BODY%#*}"
+
+    # 标签只允许安全字符，避免破坏路由标识
+    case "$LABEL" in
+        ""|*[!a-zA-Z0-9_-]*)
+            echo "标签只能包含英文、数字、下划线和连字符。"
+            return 1
+            ;;
+    esac
+
+    case "$URL_BODY" in
+        *@*) ;;
+        *)
+            echo "链接缺少用户名或密码。"
+            return 1
+            ;;
+    esac
+
+    AUTH="${URL_BODY%@*}"
+    HOSTPORT="${URL_BODY##*@}"
+
+    case "$AUTH" in
+        *:*) ;;
+        *)
+            echo "SOCKS5 链接缺少用户名或密码。"
+            return 1
+            ;;
+    esac
+
+    SOCKS_USER="${AUTH%%:*}"
+    SOCKS_PASS="${AUTH#*:}"
+    SOCKS_HOST="${HOSTPORT%:*}"
+    SOCKS_PORT="${HOSTPORT##*:}"
+
+    if [ -z "$SOCKS_USER" ] || [ -z "$SOCKS_PASS ] || \
+       [ -z "$SOCKS_HOST" ] || [ "$HOSTPORT" = "$SOCKS_PORT" ]; then
+        echo "SOCKS5 链接内容不完整。"
+        return 1
+    fi
+
+    case "$SOCKS_PORT" in
+        *[!0-9]*|"")
+            echo "SOCKS5 端口无效。"
+            return 1
+            ;;
+    esac
+
+    if [ "$SOCKS_PORT" -lt 1 ] || [ "$SOCKS_PORT" -gt 65535 ]; then
+        echo "端口必须在 1–65535 范围内。"
+        return 1
+    fi
+
+    UUID="$(cat /proc/sys/kernel/random/uuid)"
+    OUT_TAG="socks-${LABEL}"
+    TMP="${CONFIG}.tmp.$$"
+    BACKUP="${CONFIG}.bak.$(date +%Y%m%d%H%M%S)"
+
+    # 确认标签和出站标识没有重复
+    if jq -e --arg label "$LABEL" --arg tag "$OUT_TAG" '
+        any(.inbounds[]?.settings.clients[]?; .email == $label)
+        or any(.outbounds[]?; .tag == $tag)
+    ' "$CONFIG" >/dev/null; then
+        echo "标签或 SOCKS 出站已存在，请换一个标签。"
+        return 1
+    fi
+
+    # 原版安装模式使用一个 VLESS 入站。
+    # 若配置不是预期结构，拒绝修改。
+    if ! jq -e '
+        ([.inbounds[]? | select(.protocol == "vless")] | length) == 1
+        and all(.inbounds[]? | select(.protocol == "vless");
+            (.settings.clients | type) == "array")
+        and (.outbounds | type) == "array"
+    ' "$CONFIG" >/dev/null; then
+        echo "配置结构不符合预期，未修改文件。"
+        return 1
+    fi
+
+    # 使用 jq 原子式生成新配置：
+    # 1. 添加 VLESS 用户
+    # 2. 添加 SOCKS 出站
+    # 3. 将此用户的路由规则放在规则列表最前面
+    if ! jq \
+        --arg uuid "$UUID" \
+        --arg label "$LABEL" \
+        --arg outtag "$OUT_TAG" \
+        --arg host "$SOCKS_HOST" \
+        --argjson port "$SOCKS_PORT" \
+        --arg user "$SOCKS_USER" \
+        --arg pass "$SOCKS_PASS" '
+        (.inbounds |= map(
+            if .protocol == "vless" then
+                .settings.clients += [
+                    {"id": $uuid, "email": $label}
+                ]
+            else . end
+        ))
+        | (.outbounds += [{
+            "tag": $outtag,
+            "protocol": "socks",
+            "settings": {
+                "servers": [{
+                    "address": $host,
+                    "port": $port,
+                    "users": [{"user": $user, "pass": $pass}]
+                }]
+            }
+        }])
+        | (.routing //= {})
+        | (.routing.rules //= [])
+        | (.routing.rules = [{
+            "type": "field",
+            "user": [$label],
+            "outboundTag": $outtag
+        }] + .routing.rules)
+    ' "$CONFIG" > "$TMP"; then
+        rm -f "$TMP"
+        echo "生成 JSON 失败，未修改原配置。"
+        return 1
+    fi
+
+    if ! jq empty "$TMP"; then
+        rm -f "$TMP"
+        echo "JSON 校验失败。"
+        return 1
+    fi
+
+    # 先测试，成功后才备份并替换
+    if ! "$XRAY" run -test -config "$TMP"; then
+        rm -f "$TMP"
+        echo "Xray 配置测试失败，原配置保持不变。"
+        return 1
+    fi
+
+    if ! cp -p "$CONFIG" "$BACKUP"; then
+        rm -f "$TMP"
+        echo "备份失败，取消修改。"
+        return 1
+    fi
+
+    if ! cat "$TMP" > "$CONFIG"; then
+        cp -p "$BACKUP" "$CONFIG"
+        rm -f "$TMP"
+        echo "写入失败，已尝试恢复备份。"
+        return 1
+    fi
+
+    rm -f "$TMP"
+
+    # 从现有 VLESS 链接继承服务器、端口、传输方式和路径
+    BASE_LINK="$(grep '^vless://' "$LINKS" 2>/dev/null | head -n 1)"
+
+    if [ -n "$BASE_LINK" ]; then
+        BASE_LINK="$(printf '%s\n' "$BASE_LINK" |
+            sed -E "s#^vless://[^@]+@#vless://${UUID}@#")"
+        BASE_LINK="${BASE_LINK%%#*}"
+        printf '%s#%s\n' "$BASE_LINK" "$LABEL" >> "$LINKS"
+        echo "新用户分享链接："
+        printf '%s#%s\n' "$BASE_LINK" "$LABEL"
+    else
+        echo "配置已更新，但找不到现有 VLESS 分享链接模板。"
+        echo "新用户 UUID：$UUID"
+        echo "标签：$LABEL"
+    fi
+
+    echo "配置已通过 Xray 测试。"
+    echo "备份文件：$BACKUP"
+    echo "请重启 Xray 服务使配置生效。"
+}
+while true
+do
+if [ \$(ps -ef | grep cloudflared-linux | grep -v grep | wc -l) == 0 ]
+then
+	argostatus=stop
+else
+	argostatus=running
+fi
+if [ \$(ps -ef | grep xray | grep -v grep | wc -l) == 0 ]
+then
+	xraystatus=stop
+else
+	xraystatus=running
+fi
+echo argo \$argostatus
+echo xray \$xraystatus
+echo 1.管理TUNNEL
+echo 2.启动服务
+echo 3.停止服务
+echo 4.重启服务
+echo 5.卸载服务
+echo 6.查看当前v2ray链接
+echo 7.更换cf dns
+echo 8.添加 SOCKS5 分流节点
+echo 0.退出
+read -p "请选择菜单(默认0): " menu
+if [ -z "\$menu" ]
+then
+	menu=0
+fi
+if [ \$menu == 1 ]
+then
+	clear
+	while true
+	do
+		echo ARGO TUNNEL当前已经绑定的服务如下
+		/opt/suoha/cloudflared-linux tunnel list
+		echo 1.删除TUNNEL
+		echo 0.退出
+		read -p "请选择菜单(默认0): " tunneladmin
+		if [ -z "\$tunneladmin" ]
+		then
+			tunneladmin=0
+		fi
+		if [ \$tunneladmin == 1 ]
+		then
+			read -p "请输入要删除的TUNNEL NAME: " tunnelname
+			echo 断开TUNNEL \$tunnelname
+			/opt/suoha/cloudflared-linux tunnel cleanup \$tunnelname
+			echo 删除TUNNEL \$tunnelname
+			/opt/suoha/cloudflared-linux tunnel delete \$tunnelname
+		else
+			break
+		fi
+	done
+elif [ \$menu == 2 ]
+then
+	kill -9 \$(ps -ef | grep xray | grep -v grep | awk '{print \$1}') >/dev/null 2>&1
+	kill -9 \$(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print \$1}') >/dev/null 2>&1
+	/etc/local.d/cloudflared.start >/dev/null 2>&1
+	/etc/local.d/xray.start >/dev/null 2>&1
+	clear
+	sleep 1
+elif [ \$menu == 3 ]
+then
+	kill -9 \$(ps -ef | grep xray | grep -v grep | awk '{print \$1}') >/dev/null 2>&1
+	kill -9 \$(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print \$1}') >/dev/null 2>&1
+	clear
+	sleep 2
+elif [ \$menu == 4 ]
+then
+	kill -9 \$(ps -ef | grep xray | grep -v grep | awk '{print \$1}') >/dev/null 2>&1
+	kill -9 \$(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print \$1}') >/dev/null 2>&1
+	/etc/local.d/cloudflared.start >/dev/null 2>&1
+	/etc/local.d/xray.start >/dev/null 2>&1
+	clear
+	sleep 1
+elif [ \$menu == 5 ]
+then
+	kill -9 \$(ps -ef | grep xray | grep -v grep | awk '{print \$1}') >/dev/null 2>&1
+	kill -9 \$(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print \$1}') >/dev/null 2>&1
+	rm -rf /opt/suoha /etc/local.d/cloudflared.start /etc/local.d/xray.start /usr/bin/suoha ~/.cloudflared
+	echo 所有服务都卸载完成
+	echo 彻底删除授权记录
+	echo 请访问 https://dash.cloudflare.com/profile/api-tokens
+	echo 删除授权的 Argo Tunnel API Token 即可
+	exit
+elif [ \$menu == 6 ]
+then
+	clear
+	cat /opt/suoha/v2ray.txt
+elif [ \$menu == 7 ]
+then
+	echo "nameserver 1.1.1.1" > /etc/resolv.conf
+	echo "nameserver 1.0.0.1" >> /etc/resolv.conf
+elif [ $menu == 8 ]
+then
+    add_socks_route
+elif [ \$menu == 0 ]
+then
+	echo 退出成功
+	exit
+fi
+done
+EOF
+else
+#创建命令链接
+cat>/opt/suoha/suoha.sh<<EOF
+#!/bin/bash
+clear
+add_socks_route() {
+    CONFIG="/opt/suoha/config.json"
+    XRAY="/opt/suoha/xray"
+    LINKS="/opt/suoha/v2ray.txt"
+
+    # 检查 jq
+    if ! command -v jq >/dev/null 2>&1; then
+        echo "正在安装 jq..."
+        if command -v apk >/dev/null 2>&1; then
+            apk add jq || return 1
+        elif command -v apt-get >/dev/null 2>&1; then
+            apt-get update && apt-get install -y jq || return 1
+        elif command -v dnf >/dev/null 2>&1; then
+            dnf install -y jq || return 1
+        elif command -v yum >/dev/null 2>&1; then
+            yum install -y jq || return 1
+        else
+            echo "无法自动安装 jq，请手动安装。"
+            return 1
+        fi
+    fi
+
+    if [ ! -f "$CONFIG" ] || [ ! -x "$XRAY" ]; then
+        echo "错误：找不到 Xray 配置或执行文件。"
+        return 1
+    fi
+
+    read -r -p "输入 SOCKS5 分享链接: " SOCKS_URL
+
+    case "$SOCKS_URL" in
+        socks5://*) ;;
+        *)
+            echo "格式错误，应以 socks5:// 开头。"
+            return 1
+            ;;
+    esac
+
+    URL_BODY="${SOCKS_URL#socks5://}"
+
+    case "$URL_BODY" in
+        *#*) ;;
+        *)
+            echo "链接必须带有 #标签，例如 #user-am。"
+            return 1
+            ;;
+    esac
+
+    LABEL="${URL_BODY##*#}"
+    URL_BODY="${URL_BODY%#*}"
+
+    # 标签只允许安全字符，避免破坏路由标识
+    case "$LABEL" in
+        ""|*[!a-zA-Z0-9_-]*)
+            echo "标签只能包含英文、数字、下划线和连字符。"
+            return 1
+            ;;
+    esac
+
+    case "$URL_BODY" in
+        *@*) ;;
+        *)
+            echo "链接缺少用户名或密码。"
+            return 1
+            ;;
+    esac
+
+    AUTH="${URL_BODY%@*}"
+    HOSTPORT="${URL_BODY##*@}"
+
+    case "$AUTH" in
+        *:*) ;;
+        *)
+            echo "SOCKS5 链接缺少用户名或密码。"
+            return 1
+            ;;
+    esac
+
+    SOCKS_USER="${AUTH%%:*}"
+    SOCKS_PASS="${AUTH#*:}"
+    SOCKS_HOST="${HOSTPORT%:*}"
+    SOCKS_PORT="${HOSTPORT##*:}"
+
+    if [ -z "$SOCKS_USER" ] || [ -z "$SOCKS_PASS ] || \
+       [ -z "$SOCKS_HOST" ] || [ "$HOSTPORT" = "$SOCKS_PORT" ]; then
+        echo "SOCKS5 链接内容不完整。"
+        return 1
+    fi
+
+    case "$SOCKS_PORT" in
+        *[!0-9]*|"")
+            echo "SOCKS5 端口无效。"
+            return 1
+            ;;
+    esac
+
+    if [ "$SOCKS_PORT" -lt 1 ] || [ "$SOCKS_PORT" -gt 65535 ]; then
+        echo "端口必须在 1–65535 范围内。"
+        return 1
+    fi
+
+    UUID="$(cat /proc/sys/kernel/random/uuid)"
+    OUT_TAG="socks-${LABEL}"
+    TMP="${CONFIG}.tmp.$$"
+    BACKUP="${CONFIG}.bak.$(date +%Y%m%d%H%M%S)"
+
+    # 确认标签和出站标识没有重复
+    if jq -e --arg label "$LABEL" --arg tag "$OUT_TAG" '
+        any(.inbounds[]?.settings.clients[]?; .email == $label)
+        or any(.outbounds[]?; .tag == $tag)
+    ' "$CONFIG" >/dev/null; then
+        echo "标签或 SOCKS 出站已存在，请换一个标签。"
+        return 1
+    fi
+
+    # 原版安装模式使用一个 VLESS 入站。
+    # 若配置不是预期结构，拒绝修改。
+    if ! jq -e '
+        ([.inbounds[]? | select(.protocol == "vless")] | length) == 1
+        and all(.inbounds[]? | select(.protocol == "vless");
+            (.settings.clients | type) == "array")
+        and (.outbounds | type) == "array"
+    ' "$CONFIG" >/dev/null; then
+        echo "配置结构不符合预期，未修改文件。"
+        return 1
+    fi
+
+    # 使用 jq 原子式生成新配置：
+    # 1. 添加 VLESS 用户
+    # 2. 添加 SOCKS 出站
+    # 3. 将此用户的路由规则放在规则列表最前面
+    if ! jq \
+        --arg uuid "$UUID" \
+        --arg label "$LABEL" \
+        --arg outtag "$OUT_TAG" \
+        --arg host "$SOCKS_HOST" \
+        --argjson port "$SOCKS_PORT" \
+        --arg user "$SOCKS_USER" \
+        --arg pass "$SOCKS_PASS" '
+        (.inbounds |= map(
+            if .protocol == "vless" then
+                .settings.clients += [
+                    {"id": $uuid, "email": $label}
+                ]
+            else . end
+        ))
+        | (.outbounds += [{
+            "tag": $outtag,
+            "protocol": "socks",
+            "settings": {
+                "servers": [{
+                    "address": $host,
+                    "port": $port,
+                    "users": [{"user": $user, "pass": $pass}]
+                }]
+            }
+        }])
+        | (.routing //= {})
+        | (.routing.rules //= [])
+        | (.routing.rules = [{
+            "type": "field",
+            "user": [$label],
+            "outboundTag": $outtag
+        }] + .routing.rules)
+    ' "$CONFIG" > "$TMP"; then
+        rm -f "$TMP"
+        echo "生成 JSON 失败，未修改原配置。"
+        return 1
+    fi
+
+    if ! jq empty "$TMP"; then
+        rm -f "$TMP"
+        echo "JSON 校验失败。"
+        return 1
+    fi
+
+    # 先测试，成功后才备份并替换
+    if ! "$XRAY" run -test -config "$TMP"; then
+        rm -f "$TMP"
+        echo "Xray 配置测试失败，原配置保持不变。"
+        return 1
+    fi
+
+    if ! cp -p "$CONFIG" "$BACKUP"; then
+        rm -f "$TMP"
+        echo "备份失败，取消修改。"
+        return 1
+    fi
+
+    if ! cat "$TMP" > "$CONFIG"; then
+        cp -p "$BACKUP" "$CONFIG"
+        rm -f "$TMP"
+        echo "写入失败，已尝试恢复备份。"
+        return 1
+    fi
+
+    rm -f "$TMP"
+
+    # 从现有 VLESS 链接继承服务器、端口、传输方式和路径
+    BASE_LINK="$(grep '^vless://' "$LINKS" 2>/dev/null | head -n 1)"
+
+    if [ -n "$BASE_LINK" ]; then
+        BASE_LINK="$(printf '%s\n' "$BASE_LINK" |
+            sed -E "s#^vless://[^@]+@#vless://${UUID}@#")"
+        BASE_LINK="${BASE_LINK%%#*}"
+        printf '%s#%s\n' "$BASE_LINK" "$LABEL" >> "$LINKS"
+        echo "新用户分享链接："
+        printf '%s#%s\n' "$BASE_LINK" "$LABEL"
+    else
+        echo "配置已更新，但找不到现有 VLESS 分享链接模板。"
+        echo "新用户 UUID：$UUID"
+        echo "标签：$LABEL"
+    fi
+
+    echo "配置已通过 Xray 测试。"
+    echo "备份文件：$BACKUP"
+    echo "请重启 Xray 服务使配置生效。"
+}
+while true
+do
+echo argo \$(systemctl status cloudflared.service | sed -n '3p')
+echo xray \$(systemctl status xray.service | sed -n '3p')
+echo 1.管理TUNNEL
+echo 2.启动服务
+echo 3.停止服务
+echo 4.重启服务
+echo 5.卸载服务
+echo 6.查看当前v2ray链接
+echo 7.更换cloudflare dns
+echo 8.添加 SOCKS5 分流节点
+echo 0.退出
+read -p "请选择菜单(默认0): " menu
+if [ -z "\$menu" ]
+then
+	menu=0
+fi
+if [ \$menu == 1 ]
+then
+	clear
+	while true
+	do
+		echo ARGO TUNNEL当前已经绑定的服务如下
+		/opt/suoha/cloudflared-linux tunnel list
+		echo 1.删除TUNNEL
+		echo 0.退出
+		read -p "请选择菜单(默认0): " tunneladmin
+		if [ -z "\$tunneladmin" ]
+		then
+			tunneladmin=0
+		fi
+		if [ \$tunneladmin == 1 ]
+		then
+			read -p "请输入要删除的TUNNEL NAME: " tunnelname
+			echo 断开TUNNEL \$tunnelname
+			/opt/suoha/cloudflared-linux tunnel cleanup \$tunnelname
+			echo 删除TUNNEL \$tunnelname
+			/opt/suoha/cloudflared-linux tunnel delete \$tunnelname
+		else
+			break
+		fi
+	done
+elif [ \$menu == 2 ]
+then
+	systemctl start cloudflared.service
+	systemctl start xray.service
+	clear
+elif [ \$menu == 3 ]
+then
+	systemctl stop cloudflared.service
+	systemctl stop xray.service
+	clear
+elif [ \$menu == 4 ]
+then
+	systemctl restart cloudflared.service
+	systemctl restart xray.service
+	clear
+elif [ \$menu == 5 ]
+then
+	systemctl stop cloudflared.service
+	systemctl stop xray.service
+	systemctl disable cloudflared.service
+	systemctl disable xray.service
+	kill -9 \$(ps -ef | grep xray | grep -v grep | awk '{print \$2}') >/dev/null 2>&1
+	kill -9 \$(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print \$2}') >/dev/null 2>&1
+	rm -rf /opt/suoha /lib/systemd/system/cloudflared.service /lib/systemd/system/xray.service /usr/bin/suoha ~/.cloudflared
+	systemctl --system daemon-reload
+	echo 所有服务都卸载完成
+	echo 彻底删除授权记录
+	echo 请访问 https://dash.cloudflare.com/profile/api-tokens
+	echo 删除授权的 Argo Tunnel API Token 即可
+	exit
+elif [ \$menu == 6 ]
+then
+	clear
+	cat /opt/suoha/v2ray.txt
+elif [ \$menu == 7 ]
+then
+	echo "nameserver 1.1.1.1" > /etc/resolv.conf
+	echo "nameserver 1.0.0.1" >> /etc/resolv.conf
+elif [ $menu == 8 ]
+then
+    add_socks_route
+elif [ \$menu == 0 ]
+then
+	echo 退出成功
+	exit
+fi
+done
+EOF
+fi
+chmod +x /opt/suoha/suoha.sh
+ln -sf /opt/suoha/suoha.sh /usr/bin/suoha
+}
+
+clear
+#!/bin/sh
+
+# 打印 ASCII 艺术
+echo "       _       _                              _                "
+echo "      | |     | |       ___   _   _    ___   | |__     ____       "
+echo "    __| |_____| |_     / __| | | | |  / _ \  | |_ \   / _  |   "
+echo "   |__   ______  _|    \__ \ | |_| | | (_) | | | | | | (_| | "
+echo "      | |_    | |_     |___/  \___/   \___/  |_| |_|  \____|"
+echo "       \__|    \__|"
+echo "                                 "
+echo -e '\n'欢迎使用 TT Agro-suoha 一键梭哈脚本...'\n'
+# 其他脚本内容
+echo 梭哈模式不需要自己提供域名,使用CF ARGO QUICK TUNNEL创建快速链接
+echo 梭哈模式在重启或者脚本再次运行后失效,如果需要使用需要再次运行创建
+echo 安装服务模式,需要有CF托管域名,并且需要按照提示手动绑定ARGO服务
+echo 首次绑定ARGO服务后如果不想再次跳转网页绑定
+echo 将已经绑定的系统目录下的 /root/.cloudflared 文件夹以及内容
+echo 拷贝至新系统下同样的目录,会自动跳过登录验证
+
+echo -e 基于 Cloudflare Tunnel 的新一代超轻量级穿透工具
+echo -e 无需公网 IP  无需端口转发  极致隐藏  专为 NAT VPS 打造
+
+echo -e 注意：梭哈模式重启服务器后失效！！！
+
+echo -e '\n'TT Cloudflare Tunnel 一键suoha脚本  无需公网 IP  无需端口转发 Agro隧道'\n'
+echo 1.梭哈模式 无需cloudflare域名重启会失效！
+echo 2.安装服务 需要cloudflare域名重启不会失效！
+echo 3.卸载服务
+echo 4.清空缓存
+echo 5.管理服务
+echo -e 0.退出脚本'\n'
+read -p "请选择模式(默认2):" mode
+if [ -z "$mode" ]
+then
+	mode=2
+fi
+# 在选择安装服务时再次检查
+if [ $mode == 2 ]; then
+    if [ -f "/usr/bin/suoha" ]; then
+        echo "服务已经安装，正在跳转到管理菜单..."
+        suoha
+        exit 0
+    fi
+    # 继续安装流程...
+fi
+if [ $mode == 1 ]
+then
+	read -p "请选择xray协议(默认1.vmess,2.vless):" protocol
+	if [ -z "$protocol" ]
+	then
+		protocol=1
+	fi
+	if [ $protocol != 1 ] && [ $protocol != 2 ]
+	then
+		echo 请输入正确的xray协议
+		exit
+	fi
+	isp=$(curl -sm 3 -H "User-Agent: Mozilla/5.0" "https://api.ip.sb/geoip" | tr -d '\n' | awk -F\" '{c="";i="";for(x=1;x<=NF;x++){if($x=="country_code")c=$(x+2);if($x=="isp")i=$(x+2)};if(c&&i)print c"-"i}' | sed 's/ /_/g' || curl -sm 3 -H "User-Agent: Mozilla/5.0" "https://ipapi.co/json" | tr -d '\n' | awk -F\" '{c="";o="";for(x=1;x<=NF;x++){if($x=="country_code")c=$(x+2);if($x=="org")o=$(x+2)};if(c&&o)print c"-"o}' | sed 's/ /_/g' || echo "vps")
+	if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
+	then
+		kill -9 $(ps -ef | grep xray | grep -v grep | awk '{print $1}') >/dev/null 2>&1
+		kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $1}') >/dev/null 2>&1
+	else
+		kill -9 $(ps -ef | grep xray | grep -v grep | awk '{print $2}') >/dev/null 2>&1
+		kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $2}') >/dev/null 2>&1
+	fi
+	rm -rf xray cloudflared-linux v2ray.txt
+	quicktunnel
+elif [ $mode == 2 ]
+then
+	read -p "请选择xray协议(默认1.vmess,2.vless):" protocol
+	if [ -z "$protocol" ]
+	then
+		protocol=1
+	fi
+	if [ $protocol != 1 ] && [ $protocol != 2 ]
+	then
+		echo 请输入正确的xray协议
+		exit
+	fi
+	isp=$(curl -sm 3 -H "User-Agent: Mozilla/5.0" "https://api.ip.sb/geoip" | tr -d '\n' | awk -F\" '{c="";i="";for(x=1;x<=NF;x++){if($x=="country_code")c=$(x+2);if($x=="isp")i=$(x+2)};if(c&&i)print c"-"i}' | sed 's/ /_/g' || curl -sm 3 -H "User-Agent: Mozilla/5.0" "https://ipapi.co/json" | tr -d '\n' | awk -F\" '{c="";o="";for(x=1;x<=NF;x++){if($x=="country_code")c=$(x+2);if($x=="org")o=$(x+2)};if(c&&o)print c"-"o}' | sed 's/ /_/g' || echo "vps")
+	if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
+	then
+		kill -9 $(ps -ef | grep xray | grep -v grep | awk '{print $1}') >/dev/null 2>&1
+		kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $1}') >/dev/null 2>&1
+		rm -rf /opt/suoha /lib/systemd/system/cloudflared.service /lib/systemd/system/xray.service /usr/bin/suoha
+	else
+		systemctl stop cloudflared.service
+		systemctl stop xray.service
+		systemctl disable cloudflared.service
+		systemctl disable xray.service
+		kill -9 $(ps -ef | grep xray | grep -v grep | awk '{print $2}') >/dev/null 2>&1
+		kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $2}') >/dev/null 2>&1
+		rm -rf /opt/suoha /lib/systemd/system/cloudflared.service /lib/systemd/system/xray.service /usr/bin/suoha
+		systemctl --system daemon-reload
+	fi
+	installtunnel
+	cat /opt/suoha/v2ray.txt
+	echo 服务安装完成,管理服务请运行命令 suoha
+elif [ $mode == 3 ]
+then
+	if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
+	then
+		kill -9 $(ps -ef | grep xray | grep -v grep | awk '{print $1}') >/dev/null 2>&1
+		kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $1}') >/dev/null 2>&1
+		rm -rf /opt/suoha /lib/systemd/system/cloudflared.service /lib/systemd/system/xray.service /usr/bin/suoha
+	else
+		systemctl stop cloudflared.service
+		systemctl stop xray.service
+		systemctl disable cloudflared.service
+		systemctl disable xray.service
+		kill -9 $(ps -ef | grep xray | grep -v grep | awk '{print $2}') >/dev/null 2>&1
+		kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $2}') >/dev/null 2>&1
+		rm -rf /opt/suoha /lib/systemd/system/cloudflared.service /lib/systemd/system/xray.service /usr/bin/suoha ~/.cloudflared
+		systemctl --system daemon-reload
+	fi
+	clear
+	echo 所有服务都卸载完成
+	echo 彻底删除授权记录
+	echo 请访问 https://dash.cloudflare.com/profile/api-tokens
+	echo 删除授权的 Argo Tunnel API Token 即可
+elif [ $mode == 5 ]
+then
+    if [ -f "/usr/bin/suoha" ]; then
+        suoha
+    else
+        echo "管理服务未安装，请先安装服务（选择模式2）"
+    
+    fi
+
+elif [ $mode == 4 ]
+then
+	if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
+	then
+		kill -9 $(ps -ef | grep xray | grep -v grep | awk '{print $1}') >/dev/null 2>&1
+		kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $1}') >/dev/null 2>&1
+	else
+		kill -9 $(ps -ef | grep xray | grep -v grep | awk '{print $2}') >/dev/null 2>&1
+		kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $2}') >/dev/null 2>&1
+	fi
+	rm -rf xray cloudflared-linux v2ray.txt
+else
+	echo 退出成功
+	exit
+fi
+
+    
+
