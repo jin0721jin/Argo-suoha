@@ -84,7 +84,7 @@ Run the following command in your VPS terminal (supports Debian / Ubuntu / CentO
 
 **GitHub 原始链接**
 ```bash
-bash <(curl -sL https://raw.githubusercontent.com/longshen2020/Argo-suoha/refs/heads/main/suoha.sh | tr -d '\r')
+bash <(curl -sL https://raw.githubusercontent.com/jin0721jin/Argo-suoha/refs/heads/main/suoha.sh | tr -d '\r')
 ```
 **📌Select mode based on the menu**
 
