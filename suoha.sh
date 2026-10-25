@@ -307,89 +307,51 @@ cat>/opt/suoha/config.json<<EOF
 EOF
 fi
 clear
-#!/usr/bin/env bash
-
-CLOUDFLARED="/opt/suoha/cloudflared-linux"
-CERT="${HOME}/.cloudflared/cert.pem"
-ARGO_LOG="argo.log"
-
-if [[ ! -f "$CERT" ]]; then
-    echo "复制下面的链接,用浏览器打开并授权需要绑定的域名"
-    echo "在网页中授权完毕后会继续进行下一步设置"
-    $CLOUDFLARED --edge-ip-version auto --protocol http2 tunnel login
-    clear
+echo 复制下面的链接,用浏览器打开并授权需要绑定的域名
+echo 在网页中授权完毕后会继续进行下一步设置
+/opt/suoha/cloudflared-linux --edge-ip-version auto --protocol http2 tunnel login
+clear
+/opt/suoha/cloudflared-linux --edge-ip-version auto --protocol http2 tunnel list >argo.log 2>&1
+echo -e ARGO TUNNEL当前已经绑定的服务如下'\n'
+sed 1,2d argo.log | awk '{print $2}'
+echo -e '\n'自定义一个完整二级域名,例如 xxx.example.com
+echo 必须是网页里面绑定授权的域名才生效,不能乱输入
+read -p "输入绑定域名的完整二级域名: " domain
+if [ -z "$domain" ]
+then
+	echo 没有设置域名
+	exit
+elif [ $(echo $domain | grep "\." | wc -l) == 0 ]
+then
+	echo 域名格式不正确
+	exit
 fi
-cert_json=$(sed -n '/-----BEGIN/,/-----END/p' "$CERT" | grep -v '^-----' | tr -d '\n' | base64 -d 2>/dev/null)
-zone_id=$(printf '%s' "$cert_json" | grep -o '"zoneID":"[^"]*"' | cut -d'"' -f4)
-api_token=$(printf '%s' "$cert_json" | grep -o '"apiToken":"[^"]*"' | cut -d'"' -f4)
-
-if [[ -z "$zone_id" || -z "$api_token" ]]; then
-    echo "无法从 cert.pem 解析 zone 信息，请重新 login"
-    exit 1
-fi
-zone_name=$(curl -sS "https://api.cloudflare.com/client/v4/zones/${zone_id}" \
-    -H "Authorization: Bearer ${api_token}" \
-    | grep -o '"result":{[^}]*}' | grep -o '"name":"[^"]*"' | head -1 | cut -d'"' -f4)
-
-if [[ -z "$zone_name" ]]; then
-    echo "无法获取 zone 名称"
-    exit 1
-fi
-
-echo "已授权的域名区域：$zone_name"
-$CLOUDFLARED --edge-ip-version auto --protocol http2 tunnel list >"$ARGO_LOG" 2>&1
-echo -e "\nARGO TUNNEL 当前已经绑定的服务："
-sed 1,2d "$ARGO_LOG" | awk '{print $2}'
-
-echo -e "\n自定义一个二级域名前缀，例如 xxx 或 例子"
-echo "完整域名将是 <前缀>.${zone_name}"
-
-read -r -p "输入二级域名前缀: " input
-
-if [[ -z "$input" ]]; then
-    echo "没有设置域名"
-    exit 1
-fi
-domain="${input}.${zone_name}"
-name="${input}"
-if [[ $(sed 1,2d "$ARGO_LOG" | awk '{print $2}' | grep -w "$name" | wc -l) -eq 0 ]]; then
-    echo "创建 TUNNEL $name"
-    $CLOUDFLARED --edge-ip-version auto --protocol http2 tunnel create "$name" >"$ARGO_LOG" 2>&1
-    echo "TUNNEL $name 创建成功"
+name=$(echo $domain | awk -F\. '{print $1}')
+if [ $(sed 1,2d argo.log | awk '{print $2}' | grep -w $name | wc -l) == 0 ]
+then
+	echo 创建TUNNEL $name
+	/opt/suoha/cloudflared-linux --edge-ip-version auto --protocol http2 tunnel create $name >argo.log 2>&1
+	echo TUNNEL $name 创建成功
 else
-    echo "TUNNEL $name 已经存在"
-    tunnel_json="/root/.cloudflared/$(sed 1,2d "$ARGO_LOG" | awk '{print $1" "$2}' | grep -w "$name" | awk '{print $1}').json"
-    if [[ ! -f "$tunnel_json" ]]; then
-        echo "$tunnel_json 文件不存在"
-        echo "清理 TUNNEL $name"
-        $CLOUDFLARED --edge-ip-version auto --protocol http2 tunnel cleanup "$name" >"$ARGO_LOG" 2>&1
-        echo "删除 TUNNEL $name"
-        $CLOUDFLARED --edge-ip-version auto --protocol http2 tunnel delete "$name" >"$ARGO_LOG" 2>&1
-        echo "重建 TUNNEL $name"
-        $CLOUDFLARED --edge-ip-version auto --protocol http2 tunnel create "$name" >"$ARGO_LOG" 2>&1
-    else
-        echo "清理 TUNNEL $name"
-        $CLOUDFLARED --edge-ip-version auto --protocol http2 tunnel cleanup "$name" >"$ARGO_LOG" 2>&1
-    fi
+	echo TUNNEL $name 已经存在
+	if [ ! -f "/root/.cloudflared/$(sed 1,2d argo.log | awk '{print $1" "$2}' | grep -w $name | awk '{print $1}').json" ]
+	then
+		echo /root/.cloudflared/$(sed 1,2d argo.log | awk '{print $1" "$2}' | grep -w $name | awk '{print $1}').json 文件不存在
+		echo 清理TUNNEL $name
+		/opt/suoha/cloudflared-linux --edge-ip-version auto --protocol http2 tunnel cleanup $name >argo.log 2>&1
+		echo 删除TUNNEL $name
+		/opt/suoha/cloudflared-linux --edge-ip-version auto --protocol http2 tunnel delete $name >argo.log 2>&1
+		echo 重建TUNNEL $name
+		/opt/suoha/cloudflared-linux --edge-ip-version auto --protocol http2 tunnel create $name >argo.log 2>&1
+	else
+		echo 清理TUNNEL $name
+		/opt/suoha/cloudflared-linux --edge-ip-version auto --protocol http2 tunnel cleanup $name >argo.log 2>&1
+	fi
 fi
-tunneluuid=$($CLOUDFLARED --edge-ip-version auto --protocol http2 tunnel list 2>/dev/null \
-    | awk -v n="$name" '$2==n {print $1}')
-echo "绑定 TUNNEL $name 到域名 $domain"
-$CLOUDFLARED --edge-ip-version auto --protocol http2 tunnel route dns --overwrite-dns "$name" "$domain" >"$ARGO_LOG" 2>&1
-if [[ -n "$tunneluuid" ]]; then
-    record_info=$(curl -sS "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records?type=CNAME&content=${tunneluuid}.cfargotunnel.com" \
-        -H "Authorization: Bearer ${api_token}")
-    normalized=$(printf '%s' "$record_info" | grep -o '"name":"[^"]*"' | head -1 | cut -d'"' -f4)
-    if [[ -n "$normalized" ]]; then
-        echo "Cloudflare 返回的标准域名：$normalized"
-        domain="$normalized"
-    else
-        echo "API 未查到记录，保留原值：$domain"
-    fi
-else
-    echo "未取到 tunnel UUID，跳过规范化"
-fi
-echo "$domain 绑定成功"
+echo 绑定 TUNNEL $name 到域名 $domain
+/opt/suoha/cloudflared-linux --edge-ip-version auto --protocol http2 tunnel route dns --overwrite-dns $name $domain >argo.log 2>&1
+echo $domain 绑定成功
+tunneluuid=$(cut -d= -f2 argo.log)
 if [ $protocol == 1 ]
 then
 	echo -e vmess链接已经生成, cf.877774.xyz 可替换为CF优选IP'\n' >/opt/suoha/v2ray.txt
@@ -476,223 +438,6 @@ then
 #创建命令链接
 cat>/opt/suoha/suoha.sh<<EOF
 #!/bin/bash
-add_socks_route() {
-    CONFIG="/opt/suoha/config.json"
-    XRAY="/opt/suoha/xray"
-    LINKS="/opt/suoha/v2ray.txt"
-
-    # 检查 jq
-    if ! command -v jq >/dev/null 2>&1; then
-        echo "正在安装 jq..."
-        if command -v apk >/dev/null 2>&1; then
-            apk add jq || return 1
-        elif command -v apt-get >/dev/null 2>&1; then
-            apt-get update && apt-get install -y jq || return 1
-        elif command -v dnf >/dev/null 2>&1; then
-            dnf install -y jq || return 1
-        elif command -v yum >/dev/null 2>&1; then
-            yum install -y jq || return 1
-        else
-            echo "无法自动安装 jq，请手动安装。"
-            return 1
-        fi
-    fi
-
-    if [ ! -f "$CONFIG" ] || [ ! -x "$XRAY" ]; then
-        echo "错误：找不到 Xray 配置或执行文件。"
-        return 1
-    fi
-
-    read -r -p "输入 SOCKS5 分享链接: " SOCKS_URL
-
-    case "$SOCKS_URL" in
-        socks5://*) ;;
-        *)
-            echo "格式错误，应以 socks5:// 开头。"
-            return 1
-            ;;
-    esac
-
-    URL_BODY="${SOCKS_URL#socks5://}"
-
-    case "$URL_BODY" in
-        *#*) ;;
-        *)
-            echo "链接必须带有 #标签，例如 #user-am。"
-            return 1
-            ;;
-    esac
-
-    LABEL="${URL_BODY##*#}"
-    URL_BODY="${URL_BODY%#*}"
-
-    # 标签只允许安全字符，避免破坏路由标识
-    case "$LABEL" in
-        ""|*[!a-zA-Z0-9_-]*)
-            echo "标签只能包含英文、数字、下划线和连字符。"
-            return 1
-            ;;
-    esac
-
-    case "$URL_BODY" in
-        *@*) ;;
-        *)
-            echo "链接缺少用户名或密码。"
-            return 1
-            ;;
-    esac
-
-    AUTH="${URL_BODY%@*}"
-    HOSTPORT="${URL_BODY##*@}"
-
-    case "$AUTH" in
-        *:*) ;;
-        *)
-            echo "SOCKS5 链接缺少用户名或密码。"
-            return 1
-            ;;
-    esac
-
-    SOCKS_USER="${AUTH%%:*}"
-    SOCKS_PASS="${AUTH#*:}"
-    SOCKS_HOST="${HOSTPORT%:*}"
-    SOCKS_PORT="${HOSTPORT##*:}"
-
-    if [ -z "$SOCKS_USER" ] || [ -z "$SOCKS_PASS ] || \
-       [ -z "$SOCKS_HOST" ] || [ "$HOSTPORT" = "$SOCKS_PORT" ]; then
-        echo "SOCKS5 链接内容不完整。"
-        return 1
-    fi
-
-    case "$SOCKS_PORT" in
-        *[!0-9]*|"")
-            echo "SOCKS5 端口无效。"
-            return 1
-            ;;
-    esac
-
-    if [ "$SOCKS_PORT" -lt 1 ] || [ "$SOCKS_PORT" -gt 65535 ]; then
-        echo "端口必须在 1–65535 范围内。"
-        return 1
-    fi
-
-    UUID="$(cat /proc/sys/kernel/random/uuid)"
-    OUT_TAG="socks-${LABEL}"
-    TMP="${CONFIG}.tmp.$$"
-    BACKUP="${CONFIG}.bak.$(date +%Y%m%d%H%M%S)"
-
-    # 确认标签和出站标识没有重复
-    if jq -e --arg label "$LABEL" --arg tag "$OUT_TAG" '
-        any(.inbounds[]?.settings.clients[]?; .email == $label)
-        or any(.outbounds[]?; .tag == $tag)
-    ' "$CONFIG" >/dev/null; then
-        echo "标签或 SOCKS 出站已存在，请换一个标签。"
-        return 1
-    fi
-
-    # 原版安装模式使用一个 VLESS 入站。
-    # 若配置不是预期结构，拒绝修改。
-    if ! jq -e '
-        ([.inbounds[]? | select(.protocol == "vless")] | length) == 1
-        and all(.inbounds[]? | select(.protocol == "vless");
-            (.settings.clients | type) == "array")
-        and (.outbounds | type) == "array"
-    ' "$CONFIG" >/dev/null; then
-        echo "配置结构不符合预期，未修改文件。"
-        return 1
-    fi
-
-    # 使用 jq 原子式生成新配置：
-    # 1. 添加 VLESS 用户
-    # 2. 添加 SOCKS 出站
-    # 3. 将此用户的路由规则放在规则列表最前面
-    if ! jq \
-        --arg uuid "$UUID" \
-        --arg label "$LABEL" \
-        --arg outtag "$OUT_TAG" \
-        --arg host "$SOCKS_HOST" \
-        --argjson port "$SOCKS_PORT" \
-        --arg user "$SOCKS_USER" \
-        --arg pass "$SOCKS_PASS" '
-        (.inbounds |= map(
-            if .protocol == "vless" then
-                .settings.clients += [
-                    {"id": $uuid, "email": $label}
-                ]
-            else . end
-        ))
-        | (.outbounds += [{
-            "tag": $outtag,
-            "protocol": "socks",
-            "settings": {
-                "servers": [{
-                    "address": $host,
-                    "port": $port,
-                    "users": [{"user": $user, "pass": $pass}]
-                }]
-            }
-        }])
-        | (.routing //= {})
-        | (.routing.rules //= [])
-        | (.routing.rules = [{
-            "type": "field",
-            "user": [$label],
-            "outboundTag": $outtag
-        }] + .routing.rules)
-    ' "$CONFIG" > "$TMP"; then
-        rm -f "$TMP"
-        echo "生成 JSON 失败，未修改原配置。"
-        return 1
-    fi
-
-    if ! jq empty "$TMP"; then
-        rm -f "$TMP"
-        echo "JSON 校验失败。"
-        return 1
-    fi
-
-    # 先测试，成功后才备份并替换
-    if ! "$XRAY" run -test -config "$TMP"; then
-        rm -f "$TMP"
-        echo "Xray 配置测试失败，原配置保持不变。"
-        return 1
-    fi
-
-    if ! cp -p "$CONFIG" "$BACKUP"; then
-        rm -f "$TMP"
-        echo "备份失败，取消修改。"
-        return 1
-    fi
-
-    if ! cat "$TMP" > "$CONFIG"; then
-        cp -p "$BACKUP" "$CONFIG"
-        rm -f "$TMP"
-        echo "写入失败，已尝试恢复备份。"
-        return 1
-    fi
-
-    rm -f "$TMP"
-
-    # 从现有 VLESS 链接继承服务器、端口、传输方式和路径
-    BASE_LINK="$(grep '^vless://' "$LINKS" 2>/dev/null | head -n 1)"
-
-    if [ -n "$BASE_LINK" ]; then
-        BASE_LINK="$(printf '%s\n' "$BASE_LINK" |
-            sed -E "s#^vless://[^@]+@#vless://${UUID}@#")"
-        BASE_LINK="${BASE_LINK%%#*}"
-        printf '%s#%s\n' "$BASE_LINK" "$LABEL" >> "$LINKS"
-        echo "新用户分享链接："
-        printf '%s#%s\n' "$BASE_LINK" "$LABEL"
-    else
-        echo "配置已更新，但找不到现有 VLESS 分享链接模板。"
-        echo "新用户 UUID：$UUID"
-        echo "标签：$LABEL"
-    fi
-
-    echo "配置已通过 Xray 测试。"
-    echo "备份文件：$BACKUP"
-    echo "请重启 Xray 服务使配置生效。"
-}
 while true
 do
 if [ \$(ps -ef | grep cloudflared-linux | grep -v grep | wc -l) == 0 ]
@@ -716,17 +461,11 @@ echo 4.重启服务
 echo 5.卸载服务
 echo 6.查看当前v2ray链接
 echo 7.更换cf dns
-echo 8.添加 SOCKS5 分流节点
 echo 0.退出
 read -p "请选择菜单(默认0): " menu
 if [ -z "\$menu" ]
 then
 	menu=0
-fi
-if [ \$menu == 0 ]
-then
-	echo 退出成功
-	exit
 fi
 if [ \$menu == 1 ]
 then
@@ -793,9 +532,7 @@ elif [ \$menu == 7 ]
 then
 	echo "nameserver 1.1.1.1" > /etc/resolv.conf
 	echo "nameserver 1.0.0.1" >> /etc/resolv.conf
-elif [ $menu == 8 ]
-then
-    add_socks_route
+
 elif [ \$menu == 0 ]
 then
 	echo 退出成功
@@ -808,223 +545,6 @@ else
 cat>/opt/suoha/suoha.sh<<EOF
 #!/bin/bash
 clear
-add_socks_route() {
-    CONFIG="/opt/suoha/config.json"
-    XRAY="/opt/suoha/xray"
-    LINKS="/opt/suoha/v2ray.txt"
-
-    # 检查 jq
-    if ! command -v jq >/dev/null 2>&1; then
-        echo "正在安装 jq..."
-        if command -v apk >/dev/null 2>&1; then
-            apk add jq || return 1
-        elif command -v apt-get >/dev/null 2>&1; then
-            apt-get update && apt-get install -y jq || return 1
-        elif command -v dnf >/dev/null 2>&1; then
-            dnf install -y jq || return 1
-        elif command -v yum >/dev/null 2>&1; then
-            yum install -y jq || return 1
-        else
-            echo "无法自动安装 jq，请手动安装。"
-            return 1
-        fi
-    fi
-
-    if [ ! -f "$CONFIG" ] || [ ! -x "$XRAY" ]; then
-        echo "错误：找不到 Xray 配置或执行文件。"
-        return 1
-    fi
-
-    read -r -p "输入 SOCKS5 分享链接: " SOCKS_URL
-
-    case "$SOCKS_URL" in
-        socks5://*) ;;
-        *)
-            echo "格式错误，应以 socks5:// 开头。"
-            return 1
-            ;;
-    esac
-
-    URL_BODY="${SOCKS_URL#socks5://}"
-
-    case "$URL_BODY" in
-        *#*) ;;
-        *)
-            echo "链接必须带有 #标签，例如 #user-am。"
-            return 1
-            ;;
-    esac
-
-    LABEL="${URL_BODY##*#}"
-    URL_BODY="${URL_BODY%#*}"
-
-    # 标签只允许安全字符，避免破坏路由标识
-    case "$LABEL" in
-        ""|*[!a-zA-Z0-9_-]*)
-            echo "标签只能包含英文、数字、下划线和连字符。"
-            return 1
-            ;;
-    esac
-
-    case "$URL_BODY" in
-        *@*) ;;
-        *)
-            echo "链接缺少用户名或密码。"
-            return 1
-            ;;
-    esac
-
-    AUTH="${URL_BODY%@*}"
-    HOSTPORT="${URL_BODY##*@}"
-
-    case "$AUTH" in
-        *:*) ;;
-        *)
-            echo "SOCKS5 链接缺少用户名或密码。"
-            return 1
-            ;;
-    esac
-
-    SOCKS_USER="${AUTH%%:*}"
-    SOCKS_PASS="${AUTH#*:}"
-    SOCKS_HOST="${HOSTPORT%:*}"
-    SOCKS_PORT="${HOSTPORT##*:}"
-
-    if [ -z "$SOCKS_USER" ] || [ -z "$SOCKS_PASS ] || \
-       [ -z "$SOCKS_HOST" ] || [ "$HOSTPORT" = "$SOCKS_PORT" ]; then
-        echo "SOCKS5 链接内容不完整。"
-        return 1
-    fi
-
-    case "$SOCKS_PORT" in
-        *[!0-9]*|"")
-            echo "SOCKS5 端口无效。"
-            return 1
-            ;;
-    esac
-
-    if [ "$SOCKS_PORT" -lt 1 ] || [ "$SOCKS_PORT" -gt 65535 ]; then
-        echo "端口必须在 1–65535 范围内。"
-        return 1
-    fi
-
-    UUID="$(cat /proc/sys/kernel/random/uuid)"
-    OUT_TAG="socks-${LABEL}"
-    TMP="${CONFIG}.tmp.$$"
-    BACKUP="${CONFIG}.bak.$(date +%Y%m%d%H%M%S)"
-
-    # 确认标签和出站标识没有重复
-    if jq -e --arg label "$LABEL" --arg tag "$OUT_TAG" '
-        any(.inbounds[]?.settings.clients[]?; .email == $label)
-        or any(.outbounds[]?; .tag == $tag)
-    ' "$CONFIG" >/dev/null; then
-        echo "标签或 SOCKS 出站已存在，请换一个标签。"
-        return 1
-    fi
-
-    # 原版安装模式使用一个 VLESS 入站。
-    # 若配置不是预期结构，拒绝修改。
-    if ! jq -e '
-        ([.inbounds[]? | select(.protocol == "vless")] | length) == 1
-        and all(.inbounds[]? | select(.protocol == "vless");
-            (.settings.clients | type) == "array")
-        and (.outbounds | type) == "array"
-    ' "$CONFIG" >/dev/null; then
-        echo "配置结构不符合预期，未修改文件。"
-        return 1
-    fi
-
-    # 使用 jq 原子式生成新配置：
-    # 1. 添加 VLESS 用户
-    # 2. 添加 SOCKS 出站
-    # 3. 将此用户的路由规则放在规则列表最前面
-    if ! jq \
-        --arg uuid "$UUID" \
-        --arg label "$LABEL" \
-        --arg outtag "$OUT_TAG" \
-        --arg host "$SOCKS_HOST" \
-        --argjson port "$SOCKS_PORT" \
-        --arg user "$SOCKS_USER" \
-        --arg pass "$SOCKS_PASS" '
-        (.inbounds |= map(
-            if .protocol == "vless" then
-                .settings.clients += [
-                    {"id": $uuid, "email": $label}
-                ]
-            else . end
-        ))
-        | (.outbounds += [{
-            "tag": $outtag,
-            "protocol": "socks",
-            "settings": {
-                "servers": [{
-                    "address": $host,
-                    "port": $port,
-                    "users": [{"user": $user, "pass": $pass}]
-                }]
-            }
-        }])
-        | (.routing //= {})
-        | (.routing.rules //= [])
-        | (.routing.rules = [{
-            "type": "field",
-            "user": [$label],
-            "outboundTag": $outtag
-        }] + .routing.rules)
-    ' "$CONFIG" > "$TMP"; then
-        rm -f "$TMP"
-        echo "生成 JSON 失败，未修改原配置。"
-        return 1
-    fi
-
-    if ! jq empty "$TMP"; then
-        rm -f "$TMP"
-        echo "JSON 校验失败。"
-        return 1
-    fi
-
-    # 先测试，成功后才备份并替换
-    if ! "$XRAY" run -test -config "$TMP"; then
-        rm -f "$TMP"
-        echo "Xray 配置测试失败，原配置保持不变。"
-        return 1
-    fi
-
-    if ! cp -p "$CONFIG" "$BACKUP"; then
-        rm -f "$TMP"
-        echo "备份失败，取消修改。"
-        return 1
-    fi
-
-    if ! cat "$TMP" > "$CONFIG"; then
-        cp -p "$BACKUP" "$CONFIG"
-        rm -f "$TMP"
-        echo "写入失败，已尝试恢复备份。"
-        return 1
-    fi
-
-    rm -f "$TMP"
-
-    # 从现有 VLESS 链接继承服务器、端口、传输方式和路径
-    BASE_LINK="$(grep '^vless://' "$LINKS" 2>/dev/null | head -n 1)"
-
-    if [ -n "$BASE_LINK" ]; then
-        BASE_LINK="$(printf '%s\n' "$BASE_LINK" |
-            sed -E "s#^vless://[^@]+@#vless://${UUID}@#")"
-        BASE_LINK="${BASE_LINK%%#*}"
-        printf '%s#%s\n' "$BASE_LINK" "$LABEL" >> "$LINKS"
-        echo "新用户分享链接："
-        printf '%s#%s\n' "$BASE_LINK" "$LABEL"
-    else
-        echo "配置已更新，但找不到现有 VLESS 分享链接模板。"
-        echo "新用户 UUID：$UUID"
-        echo "标签：$LABEL"
-    fi
-
-    echo "配置已通过 Xray 测试。"
-    echo "备份文件：$BACKUP"
-    echo "请重启 Xray 服务使配置生效。"
-}
 while true
 do
 echo argo \$(systemctl status cloudflared.service | sed -n '3p')
@@ -1035,8 +555,7 @@ echo 3.停止服务
 echo 4.重启服务
 echo 5.卸载服务
 echo 6.查看当前v2ray链接
-echo 7.更换cloudflare dns
-echo 8.添加 SOCKS5 分流节点
+exho 7.更换cloudflare dns
 echo 0.退出
 read -p "请选择菜单(默认0): " menu
 if [ -z "\$menu" ]
@@ -1106,9 +625,6 @@ elif [ \$menu == 7 ]
 then
 	echo "nameserver 1.1.1.1" > /etc/resolv.conf
 	echo "nameserver 1.0.0.1" >> /etc/resolv.conf
-elif [ $menu == 8 ]
-then
-    add_socks_route
 elif [ \$menu == 0 ]
 then
 	echo 退出成功
@@ -1153,10 +669,10 @@ echo 3.卸载服务
 echo 4.清空缓存
 echo 5.管理服务
 echo -e 0.退出脚本'\n'
-read -p "请选择模式(默认2):" mode
+read -p "请选择模式(默认1):" mode
 if [ -z "$mode" ]
 then
-	mode=2
+	mode=1
 fi
 # 在选择安装服务时再次检查
 if [ $mode == 2 ]; then
@@ -1169,10 +685,10 @@ if [ $mode == 2 ]; then
 fi
 if [ $mode == 1 ]
 then
-	read -p "请选择xray协议(1.vmess,默认2.vless):" protocol
+	read -p "请选择xray协议(默认1.vmess,2.vless):" protocol
 	if [ -z "$protocol" ]
 	then
-		protocol=2
+		protocol=1
 	fi
 	if [ $protocol != 1 ] && [ $protocol != 2 ]
 	then
@@ -1192,10 +708,10 @@ then
 	quicktunnel
 elif [ $mode == 2 ]
 then
-	read -p "请选择xray协议(1.vmess,默认2.vless):" protocol
+	read -p "请选择xray协议(默认1.vmess,2.vless):" protocol
 	if [ -z "$protocol" ]
 	then
-		protocol=2
+		protocol=1
 	fi
 	if [ $protocol != 1 ] && [ $protocol != 2 ]
 	then
